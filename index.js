@@ -1,7 +1,6 @@
 require('dotenv').config();
 const { Client } = require('@notionhq/client');
 const Parser = require('rss-parser');
-const fetch = require('node-fetch'); // If you're on Node <18, for fetch support
 
 // Initialize Notion + RSS parser
 const notion = new Client({ auth: process.env.NOTION_API_KEY });
