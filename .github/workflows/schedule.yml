@@ -3,7 +3,7 @@ name: Scheduled RSS to Notion
 on:
   schedule:
     # Every 30 minutes
-    - cron: '0,30 * * * *'
+    - cron: '0,05 * * * *'
   workflow_dispatch:
 
 jobs:
