@@ -6,7 +6,7 @@ const Parser = require('rss-parser');
 const notion = new Client({ auth: process.env.NOTION_API_KEY });
 const parser = new Parser();
 
-// Grab the Notion database ID from .env
+// Your inline database ID from .env
 const databaseId = process.env.NOTION_DATABASE_ID;
 
 // Feeds
@@ -24,7 +24,7 @@ const feeds = [
 ];
 
 /**
- * Convert the pubDate to Moscow time (UTC+3).
+ * Convert pubDate to Moscow time (UTC+3).
  */
 function toMoscowTime(dateString) {
   if (!dateString) return null;
@@ -32,13 +32,12 @@ function toMoscowTime(dateString) {
   if (isNaN(originalDate)) return null;
 
   // Convert to UTC, then add 3 hours
-  const utcTime =
-    originalDate.getTime() + originalDate.getTimezoneOffset() * 60_000;
-  return new Date(utcTime + 3 * 60 * 60_000);
+  const utcTime = originalDate.getTime() + originalDate.getTimezoneOffset() * 60000;
+  return new Date(utcTime + 3 * 3600000);
 }
 
 /**
- * Get a short 2–3 sentence snippet.
+ * Return the first 2–3 sentences as a short snippet.
  */
 function getShortVersion(text) {
   if (!text) return 'No short text';
@@ -48,95 +47,102 @@ function getShortVersion(text) {
 }
 
 /**
- * Get the full text, if available.
+ * Return the "long" text (content:encoded if it exists, else content/snippet).
  */
 function getFullText(item) {
-  // If there's a content:encoded field, use that first.
   const encoded = item['content:encoded'];
   if (encoded) {
     return encoded; // might be HTML
   }
-  // Otherwise fallback to content or snippet.
   return item.content || item.contentSnippet || 'No full text available';
 }
 
 /**
- * Fetch the RSS feed as raw XML, fix or remove problematic entities, then
- * pass the string to rss-parser’s parseString().
+ * Fetch & sanitize RSS (only needed for problematic feeds, but let's do it for Re:Russia).
+ * Otherwise, just use parser.parseURL(feed.url).
  */
 async function fetchAndSanitizeRss(url) {
+  // Using built-in fetch in Node 18+
   const response = await fetch(url);
   let xml = await response.text();
 
-  // Example: replace or remove invalid entities. 
-  // If you know the exact bad entity (e.g., `&nbsp` missing a semicolon),
-  // you can specifically target that. This is a naive catch-all approach.
+  // Example fix: replace or remove invalid entities
   xml = xml.replace(/&(\w+)\s/g, '&$1;');
 
-  // Return the feed *as a string*, to be parsed by parser.parseString().
-  return xml;
+  // Parse with rss-parser
+  return parser.parseString(xml);
 }
 
-/**
- * Main function that loops through feeds and inserts into Notion.
- * Wrap each feed in try/catch so one bad feed doesn’t kill the entire script.
- */
 async function importFeeds() {
+  // Anything older than 24 hours is skipped
+  const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
+
   for (const feed of feeds) {
     console.log(`\n=== Fetching ${feed.name} ===`);
-
-    let parsedFeed; // will hold the final parsed feed items
+    let parsedFeed;
 
     try {
-      // If you suspect a feed is malformed (like Re:Russia),
-      // you can do the sanitize step for that specific feed:
       if (feed.name === 'Re:Russia') {
-        const rawXml = await fetchAndSanitizeRss(feed.url);
-        parsedFeed = await parser.parseString(rawXml);
+        // sanitize if you suspect invalid XML
+        parsedFeed = await fetchAndSanitizeRss(feed.url);
       } else {
-        // For normal feeds with no issues:
+        // normal parse
         parsedFeed = await parser.parseURL(feed.url);
       }
     } catch (err) {
-      console.error(`Error fetching or parsing ${feed.name}:`, err);
-      // Move on to the next feed instead of stopping everything
+      console.error(`Error fetching/parsing ${feed.name}:`, err);
       continue;
     }
 
-    // If we got here, parsedFeed should be okay. Now loop the items.
     for (const item of parsedFeed.items || []) {
       try {
         const published = toMoscowTime(item.pubDate);
+        if (!published) continue; // no valid date -> skip
+
+        // Skip if older than 24 hours
+        if (published.getTime() < oneDayAgo) {
+          console.log(`Skipping old item: ${item.title}`);
+          continue;
+        }
+
+        // Build short and long versions
         const shortText = getShortVersion(item.contentSnippet || item.content);
         const longText = getFullText(item);
 
-        // (Optional) Avoid duplicates based on URL:
-        /*
+        // Check for duplicates by URL + Source
+        // (So the same link from the same feed won't be inserted twice.)
         const existing = await notion.databases.query({
           database_id: databaseId,
           filter: {
-            property: 'URL',
-            url: { equals: item.link },
+            and: [
+              { 
+                property: 'URL', 
+                url: { equals: item.link || '' } 
+              },
+              {
+                property: 'Source',
+                rich_text: { equals: feed.name },
+              },
+            ],
           },
         });
         if (existing.results.length > 0) {
-          console.log(`Skipping duplicate: ${item.title}`);
+          console.log(`Skipping duplicate: ${feed.name} – ${item.title}`);
           continue;
         }
-        */
 
-        // Create row in your inline database
+        // Create row in Notion
         await notion.pages.create({
           parent: { database_id: databaseId },
           properties: {
             Date: {
-              date: published ? { start: published.toISOString() } : null,
+              date: { start: published.toISOString() },
             },
             Headline: {
               title: [
                 {
                   type: 'text',
-                  text: { content: item.title ?? 'Untitled' },
+                  text: { content: item.title || 'Untitled' },
                 },
               ],
             },
@@ -180,5 +186,5 @@ async function importFeeds() {
   console.log('\nAll done importing!');
 }
 
-// Run the script
+// Run
 importFeeds();
