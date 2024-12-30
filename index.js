@@ -2,43 +2,42 @@ require('dotenv').config();
 const { Client } = require('@notionhq/client');
 const Parser = require('rss-parser');
 
-// Initialize Notion + RSS parser
+// 1) Initialize Notion + RSS parser
 const notion = new Client({ auth: process.env.NOTION_API_KEY });
 const parser = new Parser();
 
-// Your inline database ID from .env
-const databaseId = process.env.NOTION_DATABASE_ID;
-
-// Feeds
+// 2) Put your feeds here
 const feeds = [
   { name: 'Медуза', url: 'https://meduza.io/rss/all' },
   { name: 'Инсайдер', url: 'https://theins.ru/feed' },
   { name: 'Медиазона', url: 'https://zona.media/rss' },
-  { name: 'Re:Russia', url: 'https://re-russia.net/feed/' },
+  { name: 'Re:Russia', url: 'https://rss.app/feeds/407wNrMr23sxZy4E.xml' },
   { name: 'Холод', url: 'https://holod.media/feed' },
   { name: 'Русская служба Би-би-си', url: 'http://feeds.bbci.co.uk/russian/rss.xml' },
-  { name: 'Верстка', url: 'https://verstka.media/feed' },
+  { name: 'Верстка', url: 'https://rss.app/feeds/iOGN8vsmRgHrnpf1.xml' },
   { name: 'Новая газета', url: 'https://novayagazeta.ru/rss' },
-  { name: 'Новая газета. Европа', url: 'https://novayagazeta.eu/rss' },
+  { name: 'Новая газета. Европа', url: 'https://rss.app/feeds/pPzIBllexkCT3MqR.xml' },
+  { name: 'Новая газета. Европа', url: 'https://rss.app/feeds/vdXv5kXzFa4IWki7.xml' },
+  { name: 'Агентство', url: 'https://rss.app/feeds/YrL7Ml9AxJqQXZU8.xml' },
+  { name: 'Агентство', url: 'https://rss.app/feeds/MZose7CCrJl0ImQC.xml' },
   { name: 'The Bell', url: 'https://thebell.io/feed' },
 ];
 
-/**
- * Convert pubDate to Moscow time (UTC+3).
- */
+// 3) Get the Notion database ID from .env
+const databaseId = process.env.NOTION_DATABASE_ID;
+
+// 4) Convert pubDate to Moscow time
 function toMoscowTime(dateString) {
   if (!dateString) return null;
   const originalDate = new Date(dateString);
   if (isNaN(originalDate)) return null;
 
   // Convert to UTC, then add 3 hours
-  const utcTime = originalDate.getTime() + originalDate.getTimezoneOffset() * 60000;
-  return new Date(utcTime + 3 * 3600000);
+  const utcTime = originalDate.getTime() + originalDate.getTimezoneOffset() * 60_000;
+  return new Date(utcTime + 3 * 3_600_000);
 }
 
-/**
- * Return the first 2–3 sentences as a short snippet.
- */
+// 5) Short snippet for 2–3 sentences
 function getShortVersion(text) {
   if (!text) return 'No short text';
   const sentences = text.split('.').filter(Boolean);
@@ -46,35 +45,34 @@ function getShortVersion(text) {
   return snippet ? snippet + '.' : 'No short text';
 }
 
-/**
- * Return the "long" text (content:encoded if it exists, else content/snippet).
- */
+// 6) Return the full text (content:encoded if present)
 function getFullText(item) {
-  const encoded = item['content:encoded'];
-  if (encoded) {
-    return encoded; // might be HTML
-  }
+  if (item['content:encoded']) return item['content:encoded'];
   return item.content || item.contentSnippet || 'No full text available';
 }
 
-/**
- * Fetch & sanitize RSS (only needed for problematic feeds, but let's do it for Re:Russia).
- * Otherwise, just use parser.parseURL(feed.url).
- */
+// 7) Fetch & sanitize RSS for potentially malformed feeds
 async function fetchAndSanitizeRss(url) {
-  // Using built-in fetch in Node 18+
   const response = await fetch(url);
   let xml = await response.text();
-
-  // Example fix: replace or remove invalid entities
+  // Replace or remove invalid entities
   xml = xml.replace(/&(\w+)\s/g, '&$1;');
-
-  // Parse with rss-parser
   return parser.parseString(xml);
 }
 
+// 8) Chunk a string into <= 2000-char pieces (Notion limit for each text block)
+function chunkBy2000(str) {
+  const chunks = [];
+  let start = 0;
+  while (start < str.length) {
+    chunks.push(str.slice(start, start + 2000));
+    start += 2000;
+  }
+  return chunks;
+}
+
 async function importFeeds() {
-  // Anything older than 24 hours is skipped
+  // We skip items older than 24 hours
   const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
 
   for (const feed of feeds) {
@@ -82,11 +80,11 @@ async function importFeeds() {
     let parsedFeed;
 
     try {
+      // For Re:Russia or if you suspect malformed feed, sanitize. 
+      // Or do it for every feed if you prefer.
       if (feed.name === 'Re:Russia') {
-        // sanitize if you suspect invalid XML
         parsedFeed = await fetchAndSanitizeRss(feed.url);
       } else {
-        // normal parse
         parsedFeed = await parser.parseURL(feed.url);
       }
     } catch (err) {
@@ -96,8 +94,9 @@ async function importFeeds() {
 
     for (const item of parsedFeed.items || []) {
       try {
+        // Convert date to Moscow time
         const published = toMoscowTime(item.pubDate);
-        if (!published) continue; // no valid date -> skip
+        if (!published) continue; // skip if no valid date
 
         // Skip if older than 24 hours
         if (published.getTime() < oneDayAgo) {
@@ -105,19 +104,18 @@ async function importFeeds() {
           continue;
         }
 
-        // Build short and long versions
+        // Short + full text
         const shortText = getShortVersion(item.contentSnippet || item.content);
-        const longText = getFullText(item);
+        const fullText = getFullText(item);
 
-        // Check for duplicates by URL + Source
-        // (So the same link from the same feed won't be inserted twice.)
+        // Check for duplicates (same source + same URL)
         const existing = await notion.databases.query({
           database_id: databaseId,
           filter: {
             and: [
-              { 
-                property: 'URL', 
-                url: { equals: item.link || '' } 
+              {
+                property: 'URL',
+                url: { equals: item.link || '' },
               },
               {
                 property: 'Source',
@@ -131,8 +129,8 @@ async function importFeeds() {
           continue;
         }
 
-        // Create row in Notion
-        await notion.pages.create({
+        // 1) Create the page in Notion with main properties
+        const page = await notion.pages.create({
           parent: { database_id: databaseId },
           properties: {
             Date: {
@@ -154,11 +152,12 @@ async function importFeeds() {
                 },
               ],
             },
+            // We keep "Long" short or a placeholder because of the 2000-char limit
             Long: {
               rich_text: [
                 {
                   type: 'text',
-                  text: { content: longText },
+                  text: { content: '[Full text in blocks below]' },
                 },
               ],
             },
@@ -176,6 +175,26 @@ async function importFeeds() {
           },
         });
 
+        // 2) Append multiple blocks for the full text
+        const blocks = chunkBy2000(fullText).map(textChunk => ({
+          object: 'block',
+          paragraph: {
+            rich_text: [
+              {
+                type: 'text',
+                text: { content: textChunk },
+              },
+            ],
+          },
+        }));
+
+        if (blocks.length > 0) {
+          await notion.blocks.children.append({
+            block_id: page.id,
+            children: blocks,
+          });
+        }
+
         console.log(`Added to Notion: [${feed.name}] ${item.title}`);
       } catch (createErr) {
         console.error(`Error creating page for ${feed.name}:`, createErr);
@@ -186,5 +205,5 @@ async function importFeeds() {
   console.log('\nAll done importing!');
 }
 
-// Run
+// Run the main function
 importFeeds();
