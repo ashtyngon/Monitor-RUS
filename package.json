@@ -1,6 +1,7 @@
 {
   "name": "monitor-rus",
   "version": "1.0.0",
+  "description": "A simple script to monitor Russian news RSS feeds and push to Notion",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
