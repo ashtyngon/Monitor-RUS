@@ -9,5 +9,19 @@
     "@notionhq/client": "^2.2.6",
     "rss-parser": "^3.12.0",
     "node-fetch": "^3.3.1"
+  },
+  "name": "monitor-rus",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@notionhq/client": "^2.2.6",
+    "rss-parser": "^3.12.0",
+    "node-fetch": "^3.3.1",
+    "dotenv": "^16.3.1"  <-- add this line
   }
+}
+
 }
