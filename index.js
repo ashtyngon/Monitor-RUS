@@ -24,7 +24,7 @@ const feeds = [
   { name: 'Агентство', url: 'https://rss.app/feeds/YrL7Ml9AxJqQXZU8.xml' },
   { name: 'Агентство', url: 'https://rss.app/feeds/MZose7CCrJl0ImQC.xml' },
   { name: 'The Bell', url: 'https://thebell.io/feed' },
-  { name: 'MBK Tg', url: 'https://t.me/s/khodorkovski' },
+  { name: 'MBK Tg', url: 'https://rss.app/feeds/v9YNyRdfdW4DzuPF.xml' },
 ];
 
 // 3) Notion database from .env
