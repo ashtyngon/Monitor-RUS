@@ -13,7 +13,6 @@ const feeds = [
   { name: 'Медиазона', url: 'https://zona.media/rss' },
   // Example for Re:Russia using an RSS.app link
   { name: 'Re:Russia', url: 'https://rss.app/feeds/407wNrMr23sxZy4E.xml' },
-  { name: 'Холод', url: 'https://holod.media/feed' },
   { name: 'Русская служба Би-би-си', url: 'http://feeds.bbci.co.uk/russian/rss.xml' },
   { name: 'Верстка', url: 'https://rss.app/feeds/iOGN8vsmRgHrnpf1.xml' },
   { name: 'Новая газета', url: 'https://novayagazeta.ru/rss' },
