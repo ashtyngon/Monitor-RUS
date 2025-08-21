@@ -25,7 +25,16 @@ const feeds = [
   { name: 'The Bell', url: 'https://thebell.io/feed' },
   { name: 'MBK Tg', url: 'https://rss.app/feeds/v9YNyRdfdW4DzuPF.xml' },
 ];
-
+ // NEW additions
+  { url: 'https://echo.msk.ru/news/rss/full.xml', source: 'Эхо' },
+  { url: 'https://www.currenttime.tv/api/epiqq', source: 'Настоящее Время' },
+  // Дождь doesn’t expose RSS directly — you’ll need a proxy like rss.app or rsshub.
+  // Example (rss.app proxy for tvrain.ru/news): replace with your own generated link
+  { url: 'https://rss.app/feeds/your-tvrain-feed.xml', source: 'Дождь' },
+  { url: 'https://www.svoboda.org/api/zrqiteuuir', source: 'Радио Свобода' },
+  { url: 'https://rss.dw.com/rdf/rss-ru-news', source: 'DW (на русском)' },
+  { url: 'https://www.theguardian.com/world/russia/rss', source: 'The Guardian Russia' }
+];
 // 3) Notion database from .env
 const databaseId = process.env.NOTION_DATABASE_ID;
 
