@@ -2,8 +2,7 @@ name: Scheduled RSS → Notion (Free)
 
 on:
   schedule:
-    # Every 30 minutes (00 and 30)
-    - cron: "*/5 * * * *"
+    - cron: "0,30 * * * *"   # every 30 min; change to "*/5 * * * *" if you want every 5
   workflow_dispatch: {}
 
 permissions:
@@ -16,7 +15,6 @@ concurrency:
 
 jobs:
   run-rss-script:
-    # FREE: standard Linux runner on a public repo
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -28,10 +26,9 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 'lts/*'
-          cache: 'npm'
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci || npm i
 
       - name: Run the monitor
         env:
