@@ -1,28 +1,40 @@
-name: Scheduled RSS to Notion
+name: Scheduled RSS → Notion (Free)
 
 on:
   schedule:
-    # Every 30 minutes
-    - cron: '0,05 * * * *'
-  workflow_dispatch:
+    # Every 30 minutes (00 and 30)
+    - cron: "0,30 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: monitor-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   run-rss-script:
+    # FREE: standard Linux runner on a public repo
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+
     steps:
       - name: Check out code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      - name: Set up Node
-        uses: actions/setup-node@v3
+      - name: Use Node LTS
+        uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: 'lts/*'
+          cache: 'npm'
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
-      - name: Run the script
-        run: node index.js
+      - name: Run the monitor
         env:
           NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+        run: node index.js
