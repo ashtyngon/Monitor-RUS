@@ -2,241 +2,140 @@ require('dotenv').config();
 const { Client } = require('@notionhq/client');
 const Parser = require('rss-parser');
 
-// 1) Initialize Notion + RSS parser
+// --- Notion & RSS setup
 const notion = new Client({ auth: process.env.NOTION_API_KEY });
 const parser = new Parser();
+const databaseId = process.env.NOTION_DATABASE_ID;
 
-// 2) Your feeds
+// --- Feeds
 const feeds = [
   { name: 'Медуза', url: 'https://meduza.io/rss/all' },
   { name: 'Инсайдер', url: 'https://theins.ru/feed' },
   { name: 'Медиазона', url: 'https://zona.media/rss' },
-  // Example for Re:Russia using an RSS.app link
   { name: 'Re:Russia', url: 'https://rss.app/feeds/407wNrMr23sxZy4E.xml' },
   { name: 'Русская служба Би-би-си', url: 'http://feeds.bbci.co.uk/russian/rss.xml' },
   { name: 'Верстка', url: 'https://rss.app/feeds/iOGN8vsmRgHrnpf1.xml' },
   { name: 'Новая газета', url: 'https://novayagazeta.ru/rss' },
-  // Two different “Новая газета. Европа” RSS links
   { name: 'Новая газета. Европа', url: 'https://rss.app/feeds/pPzIBllexkCT3MqR.xml' },
   { name: 'Новая газета. Европа', url: 'https://rss.app/feeds/vdXv5kXzFa4IWki7.xml' },
-  // Two different “Агентство” RSS links
   { name: 'Агентство', url: 'https://rss.app/feeds/YrL7Ml9AxJqQXZU8.xml' },
   { name: 'Агентство', url: 'https://rss.app/feeds/MZose7CCrJl0ImQC.xml' },
   { name: 'The Bell', url: 'https://thebell.io/feed' },
   { name: 'MBK Tg', url: 'https://rss.app/feeds/v9YNyRdfdW4DzuPF.xml' },
-];
- // NEW additions
-  { url: 'https://echo.msk.ru/news/rss/full.xml', source: 'Эхо' },
-  { url: 'https://www.currenttime.tv/api/epiqq', source: 'Настоящее Время' },
-  // Дождь doesn’t expose RSS directly — you’ll need a proxy like rss.app or rsshub.
-  // Example (rss.app proxy for tvrain.ru/news): replace with your own generated link
-  { url: 'https://rss.app/feeds/your-tvrain-feed.xml', source: 'Дождь' },
-  { url: 'https://www.svoboda.org/api/zrqiteuuir', source: 'Радио Свобода' },
-  { url: 'https://rss.dw.com/rdf/rss-ru-news', source: 'DW (на русском)' },
-  { url: 'https://www.theguardian.com/world/russia/rss', source: 'The Guardian Russia' }
-];
-// 3) Notion database from .env
-const databaseId = process.env.NOTION_DATABASE_ID;
 
-/**
- * Convert feed's pubDate by adding 8 hours.
- * If it's 2:20 pm in NYC and the feed says 14:20 local,
- * we get 22:20 (10:20 pm) with an 8-hour offset.
- */
+  // New additions 
+  { name: 'Эхо', url: 'https://echo.msk.ru/news/rss/full.xml' },
+  { name: 'Настоящее Время', url: 'https://www.currenttime.tv/api/epiqq' }, // Atom/JSON-ish; parser often still handles it
+  // Replace the next line with a real proxy (rss.app / rsshub) for TV Rain, or comment it out to avoid noise:
+  { name: 'Дождь', url: 'https://rss.app/feeds/your-tvrain-feed.xml' },
+  { name: 'Радио Свобода', url: 'https://www.svoboda.org/api/zrqiteuuir' },
+  { name: 'DW (на русском)', url: 'https://rss.dw.com/rdf/rss-ru-news' },
+  { name: 'The Guardian Russia', url: 'https://www.theguardian.com/world/russia/rss' }
+];
+
+// --- Helpers
 function convertDatePlus8Hours(dateString) {
-  if (!dateString) return null;
-  const originalDate = new Date(dateString);
-  if (isNaN(originalDate)) return null;
-
-  // Add 8 hours to the date
-  return new Date(originalDate.getTime() + 8 * 60 * 60 * 1000);
+  if (!dateString) return new Date();
+  const d = new Date(dateString);
+  if (isNaN(d)) return new Date();
+  d.setHours(d.getHours() + 8);
+  return d;
 }
 
-/**
- * Return the first 2–3 sentences as a snippet.
- */
-function getShortVersion(text) {
-  if (!text) return 'No short text';
-  const sentences = text.split('.').filter(Boolean);
-  const snippet = sentences.slice(0, 3).join('. ').trim();
-  return snippet ? snippet + '.' : 'No short text';
+function stripHtml(str = '') {
+  // very basic sanitizer to avoid extra deps
+  return String(str).replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
 }
 
-/**
- * Extract the full text from item and remove HTML tags for a cleaner look.
- */
-function getFullText(item) {
-  let html = item['content:encoded'] || item.content || item.contentSnippet || '';
-  // Remove HTML tags
-  html = html.replace(/<[^>]+>/g, '').trim();
-  return html || 'No full text available';
+function firstSentences(text, maxSentences = 3) {
+  const t = stripHtml(text);
+  if (!t) return 'No short text';
+  const parts = t.split(/(?<=[\.\!\?])\s+/).filter(Boolean);
+  const snip = parts.slice(0, Math.max(2, Math.min(maxSentences, parts.length))).join(' ');
+  return snip || t.slice(0, 250);
 }
 
-/**
- * If a feed is malformed, fetch raw text & sanitize before parsing.
- */
-async function fetchAndSanitizeRss(url) {
-  const response = await fetch(url);
-  let xml = await response.text();
-  // Replace or remove invalid entities
-  xml = xml.replace(/&(\w+)\s/g, '&$1;');
-  return parser.parseString(xml);
+async function existsInNotion(source, title, link) {
+  // Query by Source + (exact Headline OR exact URL)
+  const resp = await notion.databases.query({
+    database_id: databaseId,
+    filter: {
+      and: [
+        { property: 'Source', rich_text: { equals: source } },
+        {
+          or: [
+            { property: 'Headline', title: { equals: title || '' } },
+            { property: 'URL', url: { equals: link || '' } }
+          ]
+        }
+      ]
+    }
+  });
+  return resp.results.length > 0;
 }
 
-/**
- * Split text into 2000-char chunks to avoid Notion's limit.
- */
-function chunkBy2000(str) {
-  const chunks = [];
-  let start = 0;
-  while (start < str.length) {
-    chunks.push(str.slice(start, start + 2000));
-    start += 2000;
-  }
-  return chunks;
+function chunkText(txt, size = 2000) {
+  const out = [];
+  for (let i = 0; i < txt.length; i += size) out.push(txt.slice(i, i + size));
+  return out.length ? out : [''];
 }
 
-async function importFeeds() {
-  // Skip items older than 24 hours
-  const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
+async function addToNotion(item, source) {
+  const title = item.title || '(no title)';
+  const link = item.link || '';
+  const date = convertDatePlus8Hours(item.pubDate || item.isoDate || new Date());
+  const body =
+    stripHtml(item.contentSnippet || item.content || item.summary || item['content:encoded'] || '');
+  const shortText = firstSentences(body, 3);
+  const chunks = chunkText(body, 2000);
 
-  for (const feed of feeds) {
-    console.log(`\n=== Fetching ${feed.name} ===`);
-    let parsedFeed;
-
-    try {
-      // If you suspect a feed is malformed, use fetchAndSanitizeRss
-      if (feed.name === 'Re:Russia') {
-        parsedFeed = await fetchAndSanitizeRss(feed.url);
-      } else {
-        parsedFeed = await parser.parseURL(feed.url);
+  await notion.pages.create({
+    parent: { database_id: databaseId },
+    properties: {
+      Date: { date: { start: date.toISOString() } },
+      Headline: { title: [{ text: { content: title } }] },
+      Short: { rich_text: [{ text: { content: shortText } }] },
+      Source: { rich_text: [{ text: { content: source } }] },
+      URL: link ? { url: link } : { url: null }
+    },
+    children: chunks.map((chunk) => ({
+      object: 'block',
+      paragraph: {
+        rich_text: [{ type: 'text', text: { content: chunk } }]
       }
-    } catch (err) {
-      console.error(`Error fetching/parsing ${feed.name}:`, err);
-      continue;
+    }))
+  });
+}
+
+async function processFeed(feed) {
+  try {
+    const parsed = await parser.parseURL(feed.url);
+    if (!parsed?.items?.length) {
+      console.warn(`No items from: ${feed.name} (${feed.url})`);
+      return;
     }
 
-    for (const item of parsedFeed.items || []) {
+    for (const item of parsed.items) {
+      const title = item.title || '';
+      const link = item.link || '';
+      const seen = await existsInNotion(feed.name, title, link);
+      if (seen) continue;
+
       try {
-        // 1) Convert date
-        const published = convertDatePlus8Hours(item.pubDate);
-        if (!published) continue;
-        if (published.getTime() < oneDayAgo) {
-          console.log(`Skipping old item: ${item.title}`);
-          continue;
-        }
-
-        // 2) Build short + full text
-        const shortText = getShortVersion(item.contentSnippet || item.content);
-        const fullText = getFullText(item);
-
-        // 3) Check duplicates by (Title OR Link) + Source
-        // so you don't get repeated headlines even if links differ
-        const existing = await notion.databases.query({
-          database_id: databaseId,
-          filter: {
-            and: [
-              // Must match source
-              {
-                property: 'Source',
-                rich_text: { equals: feed.name },
-              },
-              // AND must match EITHER same title OR same link
-              {
-                or: [
-                  {
-                    property: 'Headline', 
-                    title: { equals: item.title || '' },
-                  },
-                  {
-                    property: 'URL',
-                    url: { equals: item.link || '' },
-                  },
-                ],
-              },
-            ],
-          },
-        });
-
-        if (existing.results.length > 0) {
-          console.log(`Skipping duplicate: ${feed.name} – ${item.title}`);
-          continue;
-        }
-
-        // 4) Create the page in Notion
-        const page = await notion.pages.create({
-          parent: { database_id: databaseId },
-          properties: {
-            Date: {
-              date: { start: published.toISOString() },
-            },
-            Headline: {
-              title: [
-                {
-                  type: 'text',
-                  text: { content: item.title || 'Untitled' },
-                },
-              ],
-            },
-            Short: {
-              rich_text: [
-                {
-                  type: 'text',
-                  text: { content: shortText },
-                },
-              ],
-            },
-            // Keep "Long" minimal
-            Long: {
-              rich_text: [
-                {
-                  type: 'text',
-                  text: { content: '[Full text in blocks below]' },
-                },
-              ],
-            },
-            Source: {
-              rich_text: [
-                {
-                  type: 'text',
-                  text: { content: feed.name },
-                },
-              ],
-            },
-            URL: {
-              url: item.link || '',
-            },
-          },
-        });
-
-        // 5) Append multiple blocks for the full text
-        const blocks = chunkBy2000(fullText).map((textChunk) => ({
-          object: 'block',
-          paragraph: {
-            rich_text: [
-              {
-                type: 'text',
-                text: { content: textChunk },
-              },
-            ],
-          },
-        }));
-        if (blocks.length > 0) {
-          await notion.blocks.children.append({
-            block_id: page.id,
-            children: blocks,
-          });
-        }
-
-        console.log(`Added to Notion: [${feed.name}] ${item.title}`);
+        await addToNotion(item, feed.name);
+        console.log(`Added: [${feed.name}] ${title}`);
       } catch (createErr) {
-        console.error(`Error creating page for ${feed.name}:`, createErr);
+        console.error(`Create failed for ${feed.name}: ${createErr.message}`);
       }
     }
+  } catch (err) {
+    console.error(`Fetch/parse failed for ${feed.name}: ${err.message}`);
   }
-
-  console.log('\nAll done importing!');
 }
 
-// Run the main function
-importFeeds();
+(async function run() {
+  for (const feed of feeds) {
+    await processFeed(feed);
+  }
+  console.log('Done.');
+})();
