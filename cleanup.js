@@ -1,154 +1,173 @@
-// cleanup.js
+// cleanup.js — archive duplicates in the last 90 days by normalized Headline/URL/Date
 require('dotenv').config();
 const { Client } = require('@notionhq/client');
 
 const notion = new Client({ auth: process.env.NOTION_API_KEY });
 const databaseId = process.env.NOTION_DATABASE_ID;
 
-const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+// ---------- same normalizers as index.js ----------
+const SOURCE_SUFFIXES = [
+  'медуза','медиазона','верстка','важные истории','новая газета','новая газета. европа',
+  'агентство','the bell','эхо','дождь','тайга.инфо','bellingcat','овд-инфо','re:russia',
+  'carnegie','dw','the guardian','associated press','радио свобода','настящее время',
+  'bbc','русская служба би-би-си','астра','readovka','база','mash','кремль'
+];
 
-function stripPunct(s) {
-  return s
-    .toLowerCase()
-    .replace(/[“”«»„"]/g, '"')
-    .replace(/[’‘']/g, "'")
-    .replace(/[–—−]/g, "-")
-    .replace(/[\u200B-\u200D\uFEFF]/g, "")
-    .replace(/[^\p{L}\p{N}\s'-]/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+function normalizeTitle(raw = '') {
+  let t = (raw || '').trim();
+  const dashIdx = t.lastIndexOf(' - ');
+  const mdashIdx = t.lastIndexOf(' — ');
+  const idx = Math.max(dashIdx, mdashIdx);
+  if (idx > -1) {
+    const suffix = t.slice(idx + 3).toLowerCase().replace(/[«»“”"]/g, '').trim();
+    if (SOURCE_SUFFIXES.some(s => suffix.includes(s))) t = t.slice(0, idx).trim();
+  }
+  t = t.replace(/[«»“”"]/g, '').replace(/\s+/g, ' ').trim();
+  return t.toLowerCase();
 }
 
-function normTitleKey(title, words = 12) {
-  if (!title) return null;
-  const clean = stripPunct(title);
-  const key = clean.split(" ").slice(0, words).join(" ");
-  return key || null;
-}
-
-function unwrapGoogleNews(link) {
+function canonicalFromGoogle(link) {
   try {
     const u = new URL(link);
-    if (!u.hostname.endsWith("news.google.com")) return link;
-    const urlParam = u.searchParams.get("url");
-    if (urlParam) {
-      try { return new URL(urlParam).toString(); } catch { return urlParam; }
-    }
-    return link;
-  } catch { return link; }
+    if (!u.hostname.endsWith('news.google.com')) return null;
+    const p = u.searchParams.get('url');
+    return p || null;
+  } catch { return null; }
 }
 
-function normUrl(link) {
-  if (!link) return null;
+function normalizeUrl(u) {
+  if (!u) return '';
   try {
-    const unwrapped = unwrapGoogleNews(link);
-    const u = new URL(unwrapped);
-    u.hash = "";
-    const drop = new Set(["utm_source","utm_medium","utm_campaign","utm_term","utm_content","oc","cid","si","fbclid","gclid","igsh"]);
-    [...u.searchParams.keys()].forEach((k) => { if (drop.has(k.toLowerCase())) u.searchParams.delete(k); });
-    let path = u.pathname.replace(/\/+$/, "");
-    if (path === "") path = "/";
-    u.pathname = path;
-    u.username = "";
-    u.password = "";
-    u.protocol = u.protocol.toLowerCase();
-    u.hostname = u.hostname.toLowerCase();
-    return u.toString();
+    const googleTarget = canonicalFromGoogle(u);
+    if (googleTarget) u = googleTarget;
+
+    const url = new URL(u);
+    const junk = [
+      'utm_source','utm_medium','utm_campaign','utm_term','utm_content','utm_id',
+      'gclid','fbclid','oc','ocid','ref','referrer'
+    ];
+    junk.forEach(k => url.searchParams.delete(k));
+    url.hash = '';
+    url.hostname = url.hostname.replace(/^www\./, '');
+    const path = url.pathname.replace(/\/+$/,'');
+    const qs = url.searchParams.toString();
+    return `${url.hostname}${path}${qs ? '?' + qs : ''}`.toLowerCase();
   } catch {
-    return link.trim().toLowerCase();
+    return u.trim().toLowerCase();
   }
 }
 
-async function getRecentPages() {
-  const pages = [];
-  let hasMore = true;
-  let nextCursor = undefined;
+function normalizeDateKey(dateString) {
+  const d = new Date(dateString || Date.now());
+  if (isNaN(d)) return '';
+  const ms10 = 10 * 60 * 1000;
+  const bucket = Math.round(d.getTime() / ms10) * ms10;
+  return new Date(bucket).toISOString();
+}
 
-  const threeMonthsAgo = new Date();
-  threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+// ---------- Notion helpers ----------
+async function fetchAllSince(daysBack = 90) {
+  const since = new Date();
+  since.setDate(since.getDate() - daysBack);
+  const filter = {
+    and: [
+      { property: 'Date', date: { on_or_after: since.toISOString() } }
+    ]
+  };
 
-  console.log(`Fetching pages created on/after ${threeMonthsAgo.toISOString()} ...`);
-  while (hasMore) {
+  const acc = [];
+  let cursor = undefined;
+  do {
     const resp = await notion.databases.query({
-      database_id: databaseId,
-      start_cursor: nextCursor,
-      filter: { property: 'Date', date: { on_or_after: threeMonthsAgo.toISOString() } },
-      page_size: 100,
+      database_id: process.env.NOTION_DATABASE_ID,
+      filter,
+      sorts: [{ property: 'Date', direction: 'descending' }],
+      start_cursor: cursor,
+      page_size: 100
     });
-    pages.push(...resp.results);
-    hasMore = resp.has_more;
-    nextCursor = resp.next_cursor;
-    console.log(`Fetched ${pages.length} pages so far...`);
-    await delay(150);
-  }
-  console.log(`Total pages fetched: ${pages.length}`);
-  return pages;
+    acc.push(...resp.results);
+    cursor = resp.has_more ? resp.next_cursor : undefined;
+  } while (cursor);
+
+  return acc.map(p => ({
+    id: p.id,
+    date: p.properties?.Date?.date?.start || null,
+    title: p.properties?.Headline?.title?.map(t => t?.plain_text).join(' ') || '',
+    url: p.properties?.URL?.url || '',
+    source: p.properties?.Source?.rich_text?.map(t => t?.plain_text).join(' ') || '',
+    short: p.properties?.Short?.rich_text?.map(t => t?.plain_text).join(' ') || ''
+  }));
 }
 
-function readPropText(page, propName) {
-  const p = page.properties?.[propName];
-  if (!p) return '';
-  if (p.type === 'title')     return (p.title?.map(t => t.plain_text).join('') || '').trim();
-  if (p.type === 'rich_text') return (p.rich_text?.map(t => t.plain_text).join('') || '').trim();
-  if (p.type === 'url')       return (p.url || '').trim();
-  if (p.type === 'date')      return p.date?.start || '';
-  return '';
+async function archivePage(id) {
+  await notion.pages.update({ page_id: id, archived: true });
 }
 
-async function findAndArchiveDuplicates() {
-  const pages = await getRecentPages();
+// Prefer non-Google URL; if tie, prefer the one that has a URL at all; else earliest date
+function chooseKeeper(items) {
+  const nonGoogle = items.filter(i => !(i.url || '').includes('news.google.com'));
+  if (nonGoogle.length) return nonGoogle[0];
+  const withUrl = items.filter(i => i.url);
+  if (withUrl.length) return withUrl[0];
+  return items[0];
+}
 
-  const byTitleKey = new Map();
+(async function run() {
+  console.log('Scanning last 90 days for duplicates...');
+  const pages = await fetchAllSince(90);
 
-  for (const page of pages) {
-    const title = readPropText(page, 'Headline');
-    const rawUrl = readPropText(page, 'URL');
-    const created = page.created_time;
+  // group candidates by normalized keys
+  const groups = new Map();
 
-    const titleKey = normTitleKey(title);
-    const urlKey = normUrl(rawUrl);
+  for (const p of pages) {
+    const kTitle = normalizeTitle(p.title);
+    const kUrl   = normalizeUrl(p.url);
+    const kDate  = normalizeDateKey(p.date);
 
-    if (!titleKey && !urlKey) continue;
-    const key = titleKey || urlKey;
+    // Build group IDs: by title, by url, by title+date
+    const keys = new Set([`t:${kTitle}`, kUrl ? `u:${kUrl}` : '', `td:${kTitle}::${kDate}`].filter(Boolean));
 
-    if (!byTitleKey.has(key)) byTitleKey.set(key, []);
-    byTitleKey.get(key).push({
-      id: page.id,
-      created_time: created,
-      title,
-      urlKey,
-      rawUrl,
-    });
+    // Find existing group to merge into if any key already exists
+    let groupId = null;
+    for (const key of keys) {
+      if (groups.has(key)) { groupId = key; break; }
+    }
+    if (!groupId) groupId = [...keys][0]; // pick first key as anchor
+
+    // ensure all keys map to the same array (union)
+    const arr = groups.get(groupId) || [];
+    arr.push(p);
+    groups.set(groupId, arr);
+    for (const key of keys) groups.set(key, arr); // alias keys to same list
   }
 
-  console.log(`Built ${byTitleKey.size} title-keys.`);
-
+  // decide duplicates inside each real group
+  const visited = new Set();
   let archived = 0;
 
-  for (const [key, group] of byTitleKey.entries()) {
-    if (group.length <= 1) continue;
+  for (const [key, arr] of groups) {
+    if (visited.has(arr)) continue;
+    visited.add(arr);
 
-    const allItems = [...group];
-    allItems.sort((a, b) => new Date(a.created_time) - new Date(b.created_time));
-    const toArchive = allItems.slice(1);
+    if (arr.length <= 1) continue;
 
-    console.log(`DUPE (${allItems.length}): "${allItems[0].title}"`);
-    for (const p of toArchive) {
+    // Choose one to keep and archive the rest
+    const keep = chooseKeeper(arr);
+    const toArchive = arr.filter(x => x.id !== keep.id);
+
+    for (const dup of toArchive) {
       try {
-        await notion.pages.update({ page_id: p.id, archived: true });
+        await archivePage(dup.id);
         archived++;
-        console.log(`  archived: ${p.id}  [url=${p.rawUrl || '∅'}]`);
-        await delay(350);
+        console.log(`[ARCHIVED] ${dup.title} (${dup.url})`);
       } catch (e) {
-        console.error(`  FAIL archive ${p.id}: ${e.message}`);
+        console.error(`Failed to archive ${dup.id}: ${e.message}`);
       }
     }
   }
 
-  console.log(`\nCleanup complete. Total duplicates archived: ${archived}`);
-}
-
-findAndArchiveDuplicates().catch((err) => {
-  console.error('Fatal error:', err);
+  console.log(`Done. Archived ${archived} duplicates.`);
+})().catch(err => {
+  console.error('Cleanup fatal error:', err);
   process.exit(1);
 });
