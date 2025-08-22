@@ -12,21 +12,17 @@ async function getRecentPages() {
     let hasMore = true;
     let nextCursor = undefined;
 
-    // --- Фильтр: только страницы за последний месяц ---
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
     console.log(`Fetching pages created after ${thirtyDaysAgo.toISOString()}...`);
-
     while (hasMore) {
         const response = await notion.databases.query({
             database_id: databaseId,
             start_cursor: nextCursor,
             filter: {
-                property: 'Date', // Убедитесь, что у вас есть колонка 'Date'
-                date: {
-                    on_or_after: thirtyDaysAgo.toISOString(),
-                },
+                property: 'Date',
+                date: { on_or_after: thirtyDaysAgo.toISOString() },
             },
         });
         pages.push(...response.results);
@@ -38,37 +34,50 @@ async function getRecentPages() {
     return pages;
 }
 
+function createSimilarityKey(page) {
+    const headlineProp = page.properties.Headline;
+    const sourceProp = page.properties.Source;
+
+    if (headlineProp && headlineProp.title && headlineProp.title.length > 0 &&
+        sourceProp && sourceProp.rich_text && sourceProp.rich_text.length > 0) {
+        
+        const headline = headlineProp.title[0].plain_text.trim();
+        const source = sourceProp.rich_text[0].plain_text.trim();
+
+        // --- ИЗМЕНЕНО ЗДЕСЬ: Ключ = Источник + Первые 5 слов из заголовка ---
+        const key = source + ' | ' + headline.split(' ').slice(0, 5).join(' ');
+        return key;
+    }
+    return null;
+}
+
 async function findAndArchiveDuplicates() {
     const recentPages = await getRecentPages();
-    const pagesByHeadline = new Map();
+    const pagesByKey = new Map();
 
-    // Группируем страницы по заголовку
     for (const page of recentPages) {
-        const headlineProp = page.properties.Headline;
-        if (headlineProp && headlineProp.title && headlineProp.title.length > 0) {
-            const headline = headlineProp.title[0].plain_text.trim(); // Убираем лишние пробелы
-            if (!pagesByHeadline.has(headline)) {
-                pagesByHeadline.set(headline, []);
+        const key = createSimilarityKey(page);
+        if (key) {
+            if (!pagesByKey.has(key)) {
+                pagesByKey.set(key, []);
             }
-            pagesByHeadline.get(headline).push({
+            pagesByKey.get(key).push({
                 id: page.id,
                 created_time: page.created_time
             });
         }
     }
 
-    console.log(`Found ${pagesByHeadline.size} unique headlines in the last 30 days.`);
+    console.log(`Found ${pagesByKey.size} unique article keys in the last 30 days.`);
 
     let duplicatesArchived = 0;
-    // Находим и архивируем дубликаты
-    for (const [headline, pages] of pagesByHeadline.entries()) {
+    for (const [key, pages] of pagesByKey.entries()) {
         if (pages.length > 1) {
-            console.log(`Found ${pages.length} items for headline: "${headline}"`);
+            console.log(`Found ${pages.length} items for key: "${key}"`);
             
-            // Сортируем, чтобы оставить самую старую запись
             pages.sort((a, b) => new Date(a.created_time) - new Date(b.created_time));
             
-            const pagesToArchive = pages.slice(1); // Все, кроме первой (самой старой)
+            const pagesToArchive = pages.slice(1);
 
             for (const page of pagesToArchive) {
                 try {
@@ -78,7 +87,7 @@ async function findAndArchiveDuplicates() {
                     });
                     duplicatesArchived++;
                     console.log(`  Archived page ID: ${page.id}`);
-                    await delay(350); // Задержка между запросами к API
+                    await delay(350);
                 } catch (error) {
                     console.error(`  Failed to archive page ID ${page.id}: ${error.message}`);
                 }
