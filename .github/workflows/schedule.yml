@@ -11,12 +11,12 @@ permissions:
 
 concurrency:
   group: monitor-${{ github.ref }}
-  cancel-in-progress: false  # Don't cancel running jobs
+  cancel-in-progress: false
 
 jobs:
   run-rss-script:
     runs-on: ubuntu-latest
-    timeout-minutes: 15  # Increased timeout
+    timeout-minutes: 15
 
     steps:
       - name: Check out code
@@ -26,15 +26,14 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 'lts/*'
-          cache: 'npm'  # Cache dependencies
 
-      - name: Install dependencies
+      - name: Install dependencies (No CI)
         run: npm install
 
       - name: Run the monitor
         env:
           NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
-          NODE_OPTIONS: "--max-old-space-size=2048"  # More memory
+          NODE_OPTIONS: "--max-old-space-size=2048"
         run: node index.js
-        continue-on-error: true  # Don't fail the whole workflow
+        continue-on-error: true
