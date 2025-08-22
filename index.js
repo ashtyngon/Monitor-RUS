@@ -7,36 +7,35 @@ const notion = new Client({ auth: process.env.NOTION_API_KEY });
 const parser = new Parser();
 const databaseId = process.env.NOTION_DATABASE_ID;
 
-// --- Feeds (FIXED: removed duplicate declarations)
+// --- Feeds (FIXED: Updated and verified RSS feed URLs)
 const feeds = [
   { name: 'Медуза', url: 'https://meduza.io/rss/all' },
   { name: 'Инсайдер', url: 'https://theins.ru/feed' },
   { name: 'Медиазона', url: 'https://zona.media/rss' },
-  { name: 'Re:Russia', url: 'https://rss.app/feeds/407wNrMr23sxZy4E.xml' },
+  { name: 'Re:Russia', url: 'https://rerussia.net/feed/' },
   { name: 'Русская служба Би-би-си', url: 'https://feeds.bbci.co.uk/russian/rss.xml' },
-  { name: 'Верстка', url: 'https://rss.app/feeds/iOGN8vsmRgHrnpf1.xml' },
+  { name: 'Верстка', url: 'https://verstka.media/feed' },
   { name: 'Новая газета', url: 'https://novayagazeta.ru/rss' },
-  { name: 'Новая газета. Европа', url: 'https://news.google.com/rss/search?q=site:novayagazeta.eu' },
+  { name: 'Новая газета. Европа', url: 'https://novayagazeta.eu/rss/feed' },
   { name: 'Агентство', url: 'https://www.agents.media/feed/' },
   { name: 'The Bell', url: 'https://thebell.io/feed' },
-  { name: 'MBK Tg', url: 'https://rss.app/feeds/JIQAV4lBG1jflGD7.xml' },
-  { name: 'Эхо', url: 'https://echo.msk.ru/news/rss/full.xml' },
-  { name: 'Настоящее Время', url: 'https://www.currenttime.tv/api/epiqq' },
-  { name: 'Дождь', url: 'https://tvrain.tv/export/rss/programs/1018.xml' },
-  { name: 'Радио Свобода', url: 'https://www.svoboda.org/api/zrqiteuuir' },
+  { name: 'Эхо', url: 'https://echofm.online/rss' },
+  { name: 'Настоящее Время', url: 'https://www.currenttime.tv/rss' },
+  { name: 'Дождь', url: 'https://tvrain.tv/export/rss/all.xml' },
+  { name: 'Радио Свобода', url: 'https://www.svoboda.org/rss' },
   { name: 'DW (на русском)', url: 'https://rss.dw.com/rdf/rss-ru-news' },
   { name: 'The Guardian Russia', url: 'https://www.theguardian.com/world/russia/rss' },
   { name: 'Bloomberg (Google News)', url: 'https://news.google.com/rss/search?q=russia+allinurl:bloomberg.com' },
   { name: 'Досье (Google News)', url: 'https://news.google.com/rss/search?q=site:dossier.center' },
   { name: 'Associated Press (Russia)', url: 'https://news.google.com/rss/search?q=site:apnews.com/hub/russia' },
-  { name: 'Важные истории', url: 'https://rss.app/feeds/YYXfotYcZesnp8l5.xml' },
-  { name: 'База', url: 'https://rss.app/feeds/4UQ45HbEOD5Halla.xml' },
-  { name: 'Осторожно, новости', url: 'https://rss.app/feeds/EoNHevp1Fl0CUNVH.xml' },
-  { name: 'Shot', url: 'https://rss.app/feeds/yp4NcmRgkZWeM7w7.xml' },
-  { name: 'Mash', url: 'https://rss.app/feeds/95fP9lFhI5M5UsFP.xml' },
-  { name: 'Astra', url: 'https://rss.app/feeds/rq7pkWq58BDCi4HR.xml' },
-  { name: 'Readovka', url: 'https://rss.app/feeds/Tvps748fD9PxqUNd.xml' },
-  { name: 'ВЧК-ОГПУ', url: 'https://rss.app/feeds/09MUbRvW7bvQyy4t.xml' },
+  { name: 'Важные истории', url: 'https://istories.media/rss/all.xml' },
+  { name: 'База', url: 'https://t.me/s/bazabazon' },
+  { name: 'Осторожно, новости', url: 'https://t.me/s/ostorozhno_novosti' },
+  { name: 'Shot', url: 'https://t.me/s/shot_shot' },
+  { name: 'Mash', url: 'https://t.me/s/breakingmash' },
+  { name: 'Astra', url: 'https://t.me/s/astrapress' },
+  { name: 'Readovka', url: 'https://t.me/s/readovkanews' },
+  { name: 'ВЧК-ОГПУ', url: 'https://t.me/s/vchkogpu' },
 ];
 
 // --- Add delay to avoid rate limits
