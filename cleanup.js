@@ -4,116 +4,83 @@ const { Client } = require('@notionhq/client');
 
 const notion = new Client({ auth: process.env.NOTION_API_KEY });
 const databaseId = process.env.NOTION_DATABASE_ID;
-const DRY_RUN = process.env.DRY_RUN === '1';
 
-const delay = (ms) => new Promise(res => setTimeout(res, ms));
+// polite delay to avoid Notion rate limits
+const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const DROP_QUERY_PARAMS = new Set([
-  'utm_source','utm_medium','utm_campaign','utm_term','utm_content','utm_id',
-  'gclid','fbclid','mc_cid','mc_eid','igshid','ved','si','oc','ocid','ref','spm','yclid','utm_reader',
-]);
+/** ---------- Helpers ---------- **/
 
-// ---------- helpers ----------
-function unwrapGoogleNews(raw) {
+function stripPunct(s) {
+  return s
+    .toLowerCase()
+    .replace(/[“”«»„"]/g, '"')
+    .replace(/[’‘']/g, "'")
+    .replace(/[–—−]/g, "-")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "") // zero-width
+    .replace(/[^\p{L}\p{N}\s'-]/gu, " ")   // keep letters, numbers, spaces, apostrophes, hyphens
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normTitleKey(title, words = 12) {
+  if (!title) return null;
+  const clean = stripPunct(title);
+  const key = clean.split(" ").slice(0, words).join(" ");
+  return key || null;
+}
+
+function unwrapGoogleNews(link) {
   try {
-    const u = new URL(raw);
-    if (!u.hostname.endsWith('news.google.com')) return raw;
-    const inner = u.searchParams.get('url');
-    return inner ? inner : raw;
+    const u = new URL(link);
+    if (!u.hostname.endsWith("news.google.com")) return link;
+
+    // Two common shapes:
+    // 1) https://news.google.com/articles/....?url=<real>&...
+    // 2) https://news.google.com/rss/articles/....?oc=5  (no url param; we cannot resolve without HTTP)
+    const urlParam = u.searchParams.get("url");
+    if (urlParam) {
+      // Sometimes Google encodes the full URL in `url=`
+      try {
+        return new URL(urlParam).toString();
+      } catch {
+        return urlParam; // at least return as-is
+      }
+    }
+    // If we cannot unwrap, return original (title key will still catch dupes)
+    return link;
   } catch {
-    return raw;
+    return link;
   }
 }
 
-function normalizeUrl(raw) {
-  if (!raw) return null;
-  let working = unwrapGoogleNews(raw.trim());
-
-  let u;
-  try { u = new URL(working); } catch { return null; }
-
-  // Lowercase host, drop www
-  u.hostname = u.hostname.toLowerCase().replace(/^www\./, '');
-  // Drop fragment
-  u.hash = '';
-
-  // Remove tracking params, sort rest for stability
-  const kept = [];
-  u.searchParams.forEach((v, k) => {
-    if (!DROP_QUERY_PARAMS.has(k.toLowerCase())) kept.push([k, v]);
-  });
-  kept.sort((a,b) => a[0].localeCompare(b[0]));
-  u.search = '';
-  for (const [k,v] of kept) u.searchParams.append(k, v);
-
-  // Default ports
-  if ((u.protocol === 'http:' && u.port === '80') || (u.protocol === 'https:' && u.port === '443')) u.port = '';
-
-  // Trim trailing slash (except root)
-  if (u.pathname.length > 1 && u.pathname.endsWith('/')) u.pathname = u.pathname.replace(/\/+$/, '');
-
-  const key = `${u.hostname}${u.pathname}${u.search || ''}`;
-  return { key, host: u.hostname, isGoogleNews: u.hostname.endsWith('news.google.com') };
-}
-
-function googleNewsHasInnerUrl(raw) {
+function normUrl(link) {
+  if (!link) return null;
   try {
-    const u = new URL(raw);
-    return u.hostname.endsWith('news.google.com') && !!u.searchParams.get('url');
-  } catch { return false; }
-}
-
-function normalizeWhitespace(s) { return (s || '').replace(/\s+/g, ' ').trim(); }
-
-// URL property: prefer common names, else first url-type prop
-function getPrimaryUrl(page) {
-  const props = page.properties || {};
-  for (const name of ['URL','Url','Link','link']) {
-    const p = props[name];
-    if (p?.type === 'url' && p.url) return p.url;
+    const unwrapped = unwrapGoogleNews(link);
+    const u = new URL(unwrapped);
+    // normalize: lowercase host, strip fragments, collapse default ports, drop common tracking params
+    u.hash = "";
+    // drop typical trackers / noise
+    const drop = new Set(["utm_source","utm_medium","utm_campaign","utm_term","utm_content","oc","cid","si","fbclid","gclid","igsh"]);
+    [...u.searchParams.keys()].forEach((k) => {
+      if (drop.has(k.toLowerCase())) u.searchParams.delete(k);
+    });
+    // normalize trailing slash
+    let path = u.pathname.replace(/\/+$/, "");
+    if (path === "") path = "/";
+    u.pathname = path;
+    u.username = "";
+    u.password = "";
+    u.protocol = u.protocol.toLowerCase();
+    u.hostname = u.hostname.toLowerCase();
+    return u.toString();
+  } catch {
+    return link.trim().toLowerCase();
   }
-  for (const k of Object.keys(props)) {
-    const p = props[k];
-    if (p?.type === 'url' && p.url) return p.url;
-  }
-  return null;
 }
 
-// Full headline text
-function getHeadline(page) {
-  const blocks = page.properties?.Headline?.title || [];
-  const full = normalizeWhitespace(blocks.map(b => b.plain_text || '').join(' '));
-  return full || null;
-}
+/** ---------- Notion fetch ---------- **/
 
-// Headline key: first N words, lowercase
-function headlineKey(page, words = 12) {
-  const h = (getHeadline(page) || '').toLowerCase();
-  if (!h) return null;
-  return h.split(/\s+/).slice(0, words).join(' ');
-}
-
-// Build BOTH keys; may return { urlKey, hKey }
-function buildKeys(page) {
-  const rawUrl = getPrimaryUrl(page);
-  let urlKey = null;
-  if (rawUrl) {
-    // If google news has ?url= — unwrap; else we still normalize its own /articles/... form
-    const norm = normalizeUrl(rawUrl);
-    if (norm && norm.key && !norm.host.includes('notion.so') && !norm.host.includes('notion.site')) {
-      urlKey = `url:${norm.key}`;
-    }
-    // If it’s a google news link with NO ?url=, we’ll rely more on headline too
-    if (rawUrl && new URL(rawUrl).hostname.endsWith('news.google.com') && !googleNewsHasInnerUrl(rawUrl)) {
-      // fall through; hKey will be crucial for grouping
-    }
-  }
-  const h = headlineKey(page, 12);
-  const hKey = h ? `h:${h}` : null;
-  return { urlKey, hKey };
-}
-
-// ---------- fetch ----------
 async function getRecentPages() {
   const pages = [];
   let hasMore = true;
@@ -122,115 +89,113 @@ async function getRecentPages() {
   const thirtyDaysAgo = new Date();
   thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-  console.log(`Fetching pages with Date on/after ${thirtyDaysAgo.toISOString()}...`);
+  console.log(`Fetching pages created on/after ${thirtyDaysAgo.toISOString()} ...`);
   while (hasMore) {
     const resp = await notion.databases.query({
       database_id: databaseId,
       start_cursor: nextCursor,
-      filter: { property: 'Date', date: { on_or_after: thirtyDaysAgo.toISOString() } },
-      sorts: [{ property: 'Date', direction: 'descending' }],
+      filter: {
+        property: 'Date',
+        date: { on_or_after: thirtyDaysAgo.toISOString() },
+      },
+      page_size: 100,
     });
     pages.push(...resp.results);
     hasMore = resp.has_more;
     nextCursor = resp.next_cursor;
     console.log(`Fetched ${pages.length} pages so far...`);
-    await delay(120);
+    await delay(150);
   }
-
-  if (pages.length === 0) {
-    console.warn('No pages matched Date filter. Retrying without filter (last 100 by created_time)…');
-    const resp = await notion.databases.query({
-      database_id: databaseId,
-      page_size: 100,
-      sorts: [{ timestamp: 'created_time', direction: 'descending' }],
-    });
-    return resp.results;
-  }
+  console.log(`Total pages fetched: ${pages.length}`);
   return pages;
 }
 
-// ---------- main (URL↔Headline alias merge) ----------
+function readPropText(page, propName) {
+  const p = page.properties?.[propName];
+  if (!p) return '';
+  if (p.type === 'title')   return (p.title?.map(t => t.plain_text).join('') || '').trim();
+  if (p.type === 'rich_text') return (p.rich_text?.map(t => t.plain_text).join('') || '').trim();
+  if (p.type === 'url')     return (p.url || '').trim();
+  if (p.type === 'date')    return p.date?.start || '';
+  return '';
+}
+
+/** ---------- Main dedupe ---------- **/
+
 async function findAndArchiveDuplicates() {
-  const recentPages = await getRecentPages();
-  console.log(`Total pages considered: ${recentPages.length}`);
+  const pages = await getRecentPages();
 
-  // buckets: bucketId -> items[]
-  // alias: headline key -> bucketId (so hKey can point to a URL bucket, or vice versa)
-  const buckets = new Map();
-  const alias = new Map();
+  // Build buckets by TITLE key (primary) and also note URLs (secondary)
+  const byTitleKey = new Map();
 
-  function chooseBucket(urlKey, hKey) {
-    // If headline already mapped to a bucket, use it
-    if (hKey && alias.has(hKey)) return alias.get(hKey);
-    // Else if we have a URL key bucket, use/create it and map headline to it
-    if (urlKey) {
-      if (!buckets.has(urlKey)) buckets.set(urlKey, []);
-      if (hKey) alias.set(hKey, urlKey);
-      return urlKey;
-    }
-    // Else headline-only bucket
-    if (hKey) {
-      if (!buckets.has(hKey)) buckets.set(hKey, []);
-      alias.set(hKey, hKey);
-      return hKey;
-    }
-    return null;
-  }
+  for (const page of pages) {
+    const title = readPropText(page, 'Headline');
+    const source = readPropText(page, 'Source'); // not used in key anymore (to catch cross-source dupes)
+    const rawUrl = readPropText(page, 'URL');
+    const created = page.created_time;
 
-  for (const page of recentPages) {
-    const { urlKey, hKey } = buildKeys(page);
-    console.log(`[keys] page ${page.id} urlKey=${urlKey || '-'} hKey=${hKey || '-'}`);
+    const titleKey = normTitleKey(title);
+    const urlKey = normUrl(rawUrl);
 
-    const bucketId = chooseBucket(urlKey, hKey);
-    if (!bucketId) continue;
+    if (!titleKey && !urlKey) continue;
 
-    buckets.get(bucketId).push({
+    const key = titleKey || urlKey; // prefer title; fall back to URL if no title
+    if (!byTitleKey.has(key)) byTitleKey.set(key, []);
+
+    byTitleKey.get(key).push({
       id: page.id,
-      created_time: page.created_time,
-      headline: getHeadline(page),
-      url: getPrimaryUrl(page),
-      urlKey, hKey,
+      created_time: created,
+      title,
+      source,
+      urlKey,
+      rawUrl,
     });
   }
 
-  console.log(`\nBucket count: ${buckets.size}`);
-  let duplicatesArchived = 0;
+  console.log(`Built ${byTitleKey.size} title-keys.`);
 
-  for (const [bucketId, items] of buckets.entries()) {
-    if (items.length <= 1) continue;
+  let archived = 0;
 
-    console.log(`\nGroup "${bucketId}" — ${items.length} items`);
-    items.sort((a, b) => new Date(a.created_time) - new Date(b.created_time));
+  for (const [key, group] of byTitleKey.entries()) {
+    if (group.length <= 1) continue;
 
-    // Show what we're grouping
-    for (const it of items) {
-      console.log(`  ${it.created_time}  ${it.id}  ${it.urlKey || ''} ${it.hKey || ''}`);
-      console.log(`    "${(it.headline || '').slice(0, 120)}"`);
-      console.log(`    ${it.url || ''}`);
+    // Further split by normalized URL when titles collide across truly different stories
+    // (rare with strong title keys, but safer).
+    const buckets = new Map();
+    for (const item of group) {
+      const ukey = item.urlKey || 'no-url';
+      if (!buckets.has(ukey)) buckets.set(ukey, []);
+      buckets.get(ukey).push(item);
     }
 
-    // Keep earliest; archive the rest
-    const toArchive = items.slice(1);
-    for (const p of toArchive) {
-      try {
-        if (DRY_RUN) {
-          console.log(`  [dry-run] Would archive ${p.id}`);
-        } else {
+    // If multiple URL buckets exist, but titles are effectively identical,
+    // we still treat them as duplicates (this is the core fix).
+    const allItems = Array.from(buckets.values()).flat();
+    // Sort all by created_time ascending; keep the oldest, archive the rest
+    allItems.sort((a, b) => new Date(a.created_time) - new Date(b.created_time));
+    const survivors = allItems.slice(0, 1);
+    const toArchive = allItems.slice(1);
+
+    if (toArchive.length > 0) {
+      console.log(`DUPE (${toArchive.length + 1}): "${group[0].title}"`);
+      for (const p of toArchive) {
+        try {
           await notion.pages.update({ page_id: p.id, archived: true });
-          console.log(`  Archived ${p.id}`);
-          duplicatesArchived++;
-          await delay(250);
+          archived++;
+          console.log(`  archived: ${p.id}  [url=${p.rawUrl || '∅'}]`);
+          await delay(350);
+        } catch (e) {
+          console.error(`  FAIL archive ${p.id}: ${e.message}`);
         }
-      } catch (err) {
-        console.error(`  Failed to archive ${p.id}: ${err.message}`);
       }
     }
   }
 
-  console.log(`\nCleanup complete. Total duplicates archived: ${duplicatesArchived}${DRY_RUN ? ' (dry-run)' : ''}`);
+  console.log(`\nCleanup complete. Total duplicates archived: ${archived}`);
 }
 
-findAndArchiveDuplicates().catch(err => {
-  console.error('A fatal error occurred:', err);
+/** ---------- run ---------- **/
+findAndArchiveDuplicates().catch((err) => {
+  console.error('Fatal error:', err);
   process.exit(1);
 });
