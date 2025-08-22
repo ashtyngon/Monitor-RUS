@@ -1,12 +1,14 @@
-name: Notion Duplicate Cleanup (Last 30 Days)
+name: Notion Duplicate Cleanup (Last 3 Months)
 
 on:
   workflow_dispatch: {}
+  schedule:
+    - cron: '0 */4 * * *'   # каждые 4 часа (UTC)
 
 jobs:
   run-cleanup-script:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     steps:
       - name: Check out code
@@ -15,12 +17,12 @@ jobs:
       - name: Use Node LTS
         uses: actions/setup-node@v4
         with:
-          node-version: '20.x'   # no cache => no lockfile required
+          node-version: 'lts/*'
 
       - name: Install dependencies
-        run: npm install --no-audit --fund=false
+        run: npm ci || npm i
 
-      - name: Run cleanup
+      - name: Run the cleanup script
         env:
           NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
