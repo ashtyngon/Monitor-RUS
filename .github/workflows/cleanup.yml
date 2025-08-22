@@ -1,12 +1,20 @@
-name: Manual Cleanup Duplicates (Last 30 Days)
+name: Notion Duplicate Cleanup (Last 30 Days)
 
 on:
-  workflow_dispatch: {} # Позволяет запускать вручную
+  workflow_dispatch: {}
+  # Uncomment to run on a schedule as well (UTC time)
+  # schedule:
+  #   - cron: "30 * * * *"   # every hour at :30
+  #   # - cron: "15 3 * * *" # or daily at 03:15 UTC
+
+concurrency:
+  group: notion-dedupe
+  cancel-in-progress: false
 
 jobs:
   run-cleanup-script:
     runs-on: ubuntu-latest
-    timeout-minutes: 20 # Увеличено время на случай большого кол-ва записей
+    timeout-minutes: 20
 
     steps:
       - name: Check out code
@@ -15,12 +23,26 @@ jobs:
       - name: Use Node LTS
         uses: actions/setup-node@v4
         with:
-          node-version: 'lts/*'
+          node-version: '20.x'
+          cache: 'npm'
 
       - name: Install dependencies
-        run: npm install
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
 
-      - name: Run the cleanup script
+      - name: Validate required secrets
+        env:
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+        run: |
+          [ -n "$NOTION_API_KEY" ] || { echo "::error title=Missing secret::NOTION_API_KEY is not set"; exit 1; }
+          [ -n "$NOTION_DATABASE_ID" ] || { echo "::error title=Missing secret::NOTION_DATABASE_ID is not set"; exit 1; }
+
+      - name: Run cleanup
         env:
           NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
