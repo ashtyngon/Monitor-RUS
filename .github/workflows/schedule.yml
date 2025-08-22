@@ -2,7 +2,7 @@ name: Scheduled RSS → Notion (Free)
 
 on:
   schedule:
-    - cron: "0,30 * * * *"   # каждые 30 минут (поставь "*/15 * * * *" для каждых 15 мин)
+    - cron: "0 * * * *"   # Every hour (more stable than every 30 min)
   workflow_dispatch: {}
 
 permissions:
@@ -11,12 +11,12 @@ permissions:
 
 concurrency:
   group: monitor-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false  # Don't cancel running jobs
 
 jobs:
   run-rss-script:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15  # Increased timeout
 
     steps:
       - name: Check out code
@@ -26,6 +26,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 'lts/*'
+          cache: 'npm'  # Cache dependencies
 
       - name: Install dependencies
         run: npm install
@@ -34,4 +35,6 @@ jobs:
         env:
           NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          NODE_OPTIONS: "--max-old-space-size=2048"  # More memory
         run: node index.js
+        continue-on-error: true  # Don't fail the whole workflow
