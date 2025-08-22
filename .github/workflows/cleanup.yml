@@ -2,14 +2,6 @@ name: Notion Duplicate Cleanup (Last 30 Days)
 
 on:
   workflow_dispatch: {}
-  # Uncomment to run on a schedule as well (UTC time)
-  # schedule:
-  #   - cron: "30 * * * *"   # every hour at :30
-  #   # - cron: "15 3 * * *" # or daily at 03:15 UTC
-
-concurrency:
-  group: notion-dedupe
-  cancel-in-progress: false
 
 jobs:
   run-cleanup-script:
@@ -23,24 +15,10 @@ jobs:
       - name: Use Node LTS
         uses: actions/setup-node@v4
         with:
-          node-version: '20.x'
-          cache: 'npm'
+          node-version: '20.x'   # no cache => no lockfile required
 
       - name: Install dependencies
-        run: |
-          if [ -f package-lock.json ]; then
-            npm ci
-          else
-            npm install
-          fi
-
-      - name: Validate required secrets
-        env:
-          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
-          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
-        run: |
-          [ -n "$NOTION_API_KEY" ] || { echo "::error title=Missing secret::NOTION_API_KEY is not set"; exit 1; }
-          [ -n "$NOTION_DATABASE_ID" ] || { echo "::error title=Missing secret::NOTION_DATABASE_ID is not set"; exit 1; }
+        run: npm install --no-audit --fund=false
 
       - name: Run cleanup
         env:
