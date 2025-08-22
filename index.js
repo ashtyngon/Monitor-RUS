@@ -58,6 +58,21 @@ const feeds = [
 // --- Add delay to avoid rate limits
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
+// --- NEW: Function to get a clean, stable ID for an item ---
+function getStableItemId(item) {
+    if (item.guid) {
+        // Use GUID if it looks like a real URL
+        if (item.guid.startsWith('http')) {
+            return item.guid.split('?')[0]; // Return the URL part before any tracking params
+        }
+    }
+    if (item.link) {
+        return item.link.split('?')[0]; // Fallback to the link, also cleaned
+    }
+    // As a last resort, use the title (less reliable but better than nothing)
+    return item.title || ''; 
+}
+
 // --- Helpers
 function convertDatePlus8Hours(dateString) {
   if (!dateString) return new Date();
@@ -80,27 +95,23 @@ function firstSentences(text, maxSentences = 3) {
   return snip || t.slice(0, 250);
 }
 
-async function existsInNotion(source, title, link) {
+// --- UPDATED: Robust duplicate check using the stable ID ---
+async function existsInNotion(stableId) {
+  if (!stableId) return false;
   try {
-    // Query by Source + (exact Headline OR exact URL)
     const resp = await notion.databases.query({
       database_id: databaseId,
       filter: {
-        and: [
-          { property: 'Source', rich_text: { equals: source } },
-          {
-            or: [
-              { property: 'Headline', title: { equals: title || '' } },
-              { property: 'URL', url: { equals: link || '' } }
-            ]
-          }
-        ]
-      }
+        property: 'GUID', // The column where we store the stable ID
+        rich_text: {
+          equals: stableId,
+        },
+      },
     });
     return resp.results.length > 0;
   } catch (error) {
-    console.error(`Error checking existence: ${error.message}`);
-    return false; // On error, assume doesn't exist
+    console.error(`Error checking existence for ID ${stableId}: ${error.message}`);
+    return true; // On error, assume it exists to avoid creating a duplicate
   }
 }
 
@@ -110,7 +121,8 @@ function chunkText(txt, size = 2000) {
   return out.length ? out : [''];
 }
 
-async function addToNotion(item, source) {
+// --- UPDATED: Now adds the stable ID to Notion ---
+async function addToNotion(item, source, stableId) {
   try {
     const title = item.title || '(no title)';
     const link = item.link || '';
@@ -120,7 +132,6 @@ async function addToNotion(item, source) {
     const shortText = firstSentences(body, 3);
     const chunks = chunkText(body, 2000);
 
-    // Limit to 25 blocks (Notion limit)
     const blocksToAdd = chunks.slice(0, 25).map((chunk) => ({
       object: 'block',
       paragraph: {
@@ -135,14 +146,15 @@ async function addToNotion(item, source) {
         Headline: { title: [{ text: { content: title } }] },
         Short: { rich_text: [{ text: { content: shortText } }] },
         Source: { rich_text: [{ text: { content: source } }] },
-        URL: link ? { url: link } : { url: null }
+        URL: link ? { url: link } : { url: null },
+        GUID: { rich_text: [{ text: { content: stableId } }] } // Saving the stable ID
       },
       children: blocksToAdd
     });
     
     return true;
   } catch (error) {
-    console.error(`Failed to add to Notion: ${error.message}`);
+    console.error(`Failed to add to Notion: "${item.title || '(no title)'}". Error: ${error.message}`);
     if (error.code === 'rate_limited') {
       console.log('Rate limited, waiting...');
       await delay(5000);
@@ -151,6 +163,7 @@ async function addToNotion(item, source) {
   }
 }
 
+// --- UPDATED: Main processing logic now uses the stable ID ---
 async function processFeed(feed) {
   try {
     const parsed = await parser.parseURL(feed.url);
@@ -159,19 +172,22 @@ async function processFeed(feed) {
       return;
     }
 
-    // Process only latest 20 items to avoid overload
-    const itemsToProcess = parsed.items.slice(0, 20);
+    const itemsToProcess = parsed.items.slice(0, 20); // Process only latest 20 items to avoid overload
 
     for (const item of itemsToProcess) {
-      const title = item.title || '';
-      const link = item.link || '';
-      const seen = await existsInNotion(feed.name, title, link);
+      const stableId = getStableItemId(item);
+      if (!stableId) {
+          console.warn(`Item from ${feed.name} has no ID, skipping: "${item.title || '(no title)'}"`);
+          continue;
+      }
+      
+      const seen = await existsInNotion(stableId);
       if (seen) continue;
 
       try {
-        const added = await addToNotion(item, feed.name);
+        const added = await addToNotion(item, feed.name, stableId);
         if (added) {
-          console.log(`Added: [${feed.name}] ${title}`);
+          console.log(`Added: [${feed.name}] ${item.title || ''}`);
           await delay(200); // Small delay between API calls
         }
       } catch (createErr) {
