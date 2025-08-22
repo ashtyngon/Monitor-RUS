@@ -2,7 +2,7 @@ name: Scheduled RSS → Notion (Free)
 
 on:
   schedule:
-    - cron: "0,30 * * * *"   # every 30 min; change to "*/5 * * * *" if you want every 5
+    - cron: "0,30 * * * *"   # каждые 30 минут (поставь "*/15 * * * *" для каждых 15 мин)
   workflow_dispatch: {}
 
 permissions:
@@ -28,7 +28,7 @@ jobs:
           node-version: 'lts/*'
 
       - name: Install dependencies
-        run: npm ci || npm i
+        run: npm install
 
       - name: Run the monitor
         env:
