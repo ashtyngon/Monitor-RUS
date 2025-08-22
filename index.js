@@ -90,7 +90,6 @@ async function existsInNotion(source, title, link) {
         orFilter.push({ property: 'URL', url: { equals: link } });
     }
     
-    // If we have nothing to filter by, assume it doesn't exist
     if (orFilter.length === 0) return false;
 
     const resp = await notion.databases.query({
@@ -105,7 +104,7 @@ async function existsInNotion(source, title, link) {
     return resp.results.length > 0;
   } catch (error) {
     console.error(`Error checking existence: ${error.message}`);
-    return true; // On error, assume it exists to avoid creating a duplicate
+    return true;
   }
 }
 
@@ -169,6 +168,14 @@ async function processFeed(feed) {
       const title = item.title || '';
       const link = item.link || '';
       
+      // --- НОВЫЙ ФИЛЬТР: Пропускаем "мусорные" статьи без текста ---
+      const body = stripHtml(item.contentSnippet || item.content || item.summary || '');
+      if (body.length < 150) {
+          console.warn(`Skipping short item (likely not an article): [${feed.name}] ${title}`);
+          continue; // Пропустить и перейти к следующей
+      }
+      // --- КОНЕЦ ФИЛЬТРА ---
+
       const seen = await existsInNotion(feed.name, title, link);
       if (seen) continue;
 
