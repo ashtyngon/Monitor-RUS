@@ -1,12 +1,12 @@
-name: Manual Cleanup Duplicates
+name: Manual Cleanup Duplicates (Last 30 Days)
 
 on:
-  workflow_dispatch: {} # Это позволяет запускать вручную
+  workflow_dispatch: {} # Позволяет запускать вручную
 
 jobs:
   run-cleanup-script:
     runs-on: ubuntu-latest
-    timeout-minutes: 20 # Даем больше времени на всякий случай
+    timeout-minutes: 20 # Увеличено время на случай большого кол-ва записей
 
     steps:
       - name: Check out code
