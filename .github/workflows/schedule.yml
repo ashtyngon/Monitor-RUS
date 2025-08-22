@@ -2,7 +2,7 @@ name: Scheduled RSS → Notion (Free)
 
 on:
   schedule:
-    - cron: "0 * * * *"   # Every hour (more stable than every 30 min)
+    - cron: "*/30 * * * *"   # Runs every 30 minutes
   workflow_dispatch: {}
 
 permissions:
