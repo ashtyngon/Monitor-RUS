@@ -4,7 +4,7 @@ const { Client } = require('@notionhq/client');
 
 const notion = new Client({ auth: process.env.NOTION_API_KEY });
 const databaseId = process.env.NOTION_DATABASE_ID;
-const DRY_RUN = process.env.DRY_RUN === '1'; // set to "1" to preview only
+const DRY_RUN = process.env.DRY_RUN === '1';
 
 const delay = (ms) => new Promise(res => setTimeout(res, ms));
 
@@ -13,7 +13,7 @@ const DROP_QUERY_PARAMS = new Set([
   'gclid','fbclid','mc_cid','mc_eid','igshid','ved','si','oc','ocid','ref','spm','yclid','utm_reader',
 ]);
 
-// ---------- URL helpers ----------
+// ---------- helpers ----------
 function unwrapGoogleNews(raw) {
   try {
     const u = new URL(raw);
@@ -27,37 +27,30 @@ function unwrapGoogleNews(raw) {
 
 function normalizeUrl(raw) {
   if (!raw) return null;
-
-  // Unwrap google news if possible
   let working = unwrapGoogleNews(raw.trim());
 
   let u;
   try { u = new URL(working); } catch { return null; }
 
-  // Host: lowercase, drop www.
+  // Lowercase host, drop www
   u.hostname = u.hostname.toLowerCase().replace(/^www\./, '');
-
-  // Drop fragments
+  // Drop fragment
   u.hash = '';
 
-  // Drop tracking params; sort stable
+  // Remove tracking params, sort rest for stability
   const kept = [];
-  u.searchParams.forEach((value, key) => {
-    if (!DROP_QUERY_PARAMS.has(key.toLowerCase())) kept.push([key, value]);
+  u.searchParams.forEach((v, k) => {
+    if (!DROP_QUERY_PARAMS.has(k.toLowerCase())) kept.push([k, v]);
   });
-  kept.sort((a, b) => a[0].localeCompare(b[0]));
+  kept.sort((a,b) => a[0].localeCompare(b[0]));
   u.search = '';
-  for (const [k, v] of kept) u.searchParams.append(k, v);
+  for (const [k,v] of kept) u.searchParams.append(k, v);
 
-  // Remove default ports
-  if ((u.protocol === 'http:' && u.port === '80') || (u.protocol === 'https:' && u.port === '443')) {
-    u.port = '';
-  }
+  // Default ports
+  if ((u.protocol === 'http:' && u.port === '80') || (u.protocol === 'https:' && u.port === '443')) u.port = '';
 
   // Trim trailing slash (except root)
-  if (u.pathname.length > 1 && u.pathname.endsWith('/')) {
-    u.pathname = u.pathname.replace(/\/+$/, '');
-  }
+  if (u.pathname.length > 1 && u.pathname.endsWith('/')) u.pathname = u.pathname.replace(/\/+$/, '');
 
   const key = `${u.hostname}${u.pathname}${u.search || ''}`;
   return { key, host: u.hostname, isGoogleNews: u.hostname.endsWith('news.google.com') };
@@ -67,17 +60,12 @@ function googleNewsHasInnerUrl(raw) {
   try {
     const u = new URL(raw);
     return u.hostname.endsWith('news.google.com') && !!u.searchParams.get('url');
-  } catch {
-    return false;
-  }
+  } catch { return false; }
 }
 
-// ---------- Notion property access ----------
-function normalizeWhitespace(s) {
-  return (s || '').replace(/\s+/g, ' ').trim();
-}
+function normalizeWhitespace(s) { return (s || '').replace(/\s+/g, ' ').trim(); }
 
-// Prefer explicit URL property. Try common names first, then first url-type property.
+// URL property: prefer common names, else first url-type prop
 function getPrimaryUrl(page) {
   const props = page.properties || {};
   for (const name of ['URL','Url','Link','link']) {
@@ -91,66 +79,41 @@ function getPrimaryUrl(page) {
   return null;
 }
 
-// Full title text (Notion titles are arrays)
+// Full headline text
 function getHeadline(page) {
   const blocks = page.properties?.Headline?.title || [];
   const full = normalizeWhitespace(blocks.map(b => b.plain_text || '').join(' '));
   return full || null;
 }
 
-// ---------- Key builder (HYBRID LOGIC) ----------
-function buildDedupeKey(page) {
-  const rawUrl = getPrimaryUrl(page);
-
-  // If URL is a google news link WITHOUT ?url=, ignore URL and use headline key
-  if (rawUrl) {
-    if (googleNewsHasInnerUrl(rawUrl)) {
-      const norm = normalizeUrl(rawUrl);
-      if (norm && norm.key && !norm.host.includes('notion.so') && !norm.host.includes('notion.site')) {
-        console.log(`[key:url] ${norm.key}`);
-        return `url:${norm.key}`;
-      }
-    } else {
-      // No inner url param. If it’s a google-news /articles/… link, switch to headline key.
-      try {
-        const host = new URL(rawUrl).hostname.toLowerCase();
-        if (host.endsWith('news.google.com')) {
-          const h = getHeadlineKey(page, 12);
-          if (h) {
-            console.log(`[key:headline-google-news-no-url] "${h}"`);
-            return `h:${h}`;
-          }
-        } else {
-          const norm = normalizeUrl(rawUrl);
-          if (norm && norm.key && !norm.host.includes('notion.so') && !norm.host.includes('notion.site')) {
-            console.log(`[key:url] ${norm.key}`);
-            return `url:${norm.key}`;
-          }
-        }
-      } catch {
-        // fallthrough to headline
-      }
-    }
-  }
-
-  // Fallback to headline-based key
-  const h = getHeadlineKey(page, 12);
-  if (h) {
-    console.log(`[key:headline-fallback] "${h}"`);
-    return `h:${h}`;
-  }
-
-  console.log(`[key:none] page ${page.id}`);
-  return null;
-}
-
-function getHeadlineKey(page, words = 10) {
+// Headline key: first N words, lowercase
+function headlineKey(page, words = 12) {
   const h = (getHeadline(page) || '').toLowerCase();
   if (!h) return null;
   return h.split(/\s+/).slice(0, words).join(' ');
 }
 
-// ---------- Fetch pages ----------
+// Build BOTH keys; may return { urlKey, hKey }
+function buildKeys(page) {
+  const rawUrl = getPrimaryUrl(page);
+  let urlKey = null;
+  if (rawUrl) {
+    // If google news has ?url= — unwrap; else we still normalize its own /articles/... form
+    const norm = normalizeUrl(rawUrl);
+    if (norm && norm.key && !norm.host.includes('notion.so') && !norm.host.includes('notion.site')) {
+      urlKey = `url:${norm.key}`;
+    }
+    // If it’s a google news link with NO ?url=, we’ll rely more on headline too
+    if (rawUrl && new URL(rawUrl).hostname.endsWith('news.google.com') && !googleNewsHasInnerUrl(rawUrl)) {
+      // fall through; hKey will be crucial for grouping
+    }
+  }
+  const h = headlineKey(page, 12);
+  const hKey = h ? `h:${h}` : null;
+  return { urlKey, hKey };
+}
+
+// ---------- fetch ----------
 async function getRecentPages() {
   const pages = [];
   let hasMore = true;
@@ -164,13 +127,9 @@ async function getRecentPages() {
     const resp = await notion.databases.query({
       database_id: databaseId,
       start_cursor: nextCursor,
-      filter: {
-        property: 'Date',
-        date: { on_or_after: thirtyDaysAgo.toISOString() },
-      },
+      filter: { property: 'Date', date: { on_or_after: thirtyDaysAgo.toISOString() } },
       sorts: [{ property: 'Date', direction: 'descending' }],
     });
-
     pages.push(...resp.results);
     hasMore = resp.has_more;
     nextCursor = resp.next_cursor;
@@ -178,7 +137,6 @@ async function getRecentPages() {
     await delay(120);
   }
 
-  // If nothing matched the Date filter (maybe Date is missing), retry without it (last 100 by created_time)
   if (pages.length === 0) {
     console.warn('No pages matched Date filter. Retrying without filter (last 100 by created_time)…');
     const resp = await notion.databases.query({
@@ -188,47 +146,70 @@ async function getRecentPages() {
     });
     return resp.results;
   }
-
   return pages;
 }
 
-// ---------- Main ----------
+// ---------- main (URL↔Headline alias merge) ----------
 async function findAndArchiveDuplicates() {
   const recentPages = await getRecentPages();
   console.log(`Total pages considered: ${recentPages.length}`);
 
+  // buckets: bucketId -> items[]
+  // alias: headline key -> bucketId (so hKey can point to a URL bucket, or vice versa)
   const buckets = new Map();
-  let urlKeyCount = 0, headlineKeyCount = 0;
+  const alias = new Map();
+
+  function chooseBucket(urlKey, hKey) {
+    // If headline already mapped to a bucket, use it
+    if (hKey && alias.has(hKey)) return alias.get(hKey);
+    // Else if we have a URL key bucket, use/create it and map headline to it
+    if (urlKey) {
+      if (!buckets.has(urlKey)) buckets.set(urlKey, []);
+      if (hKey) alias.set(hKey, urlKey);
+      return urlKey;
+    }
+    // Else headline-only bucket
+    if (hKey) {
+      if (!buckets.has(hKey)) buckets.set(hKey, []);
+      alias.set(hKey, hKey);
+      return hKey;
+    }
+    return null;
+  }
 
   for (const page of recentPages) {
-    const key = buildDedupeKey(page);
-    if (!key) continue;
-    if (key.startsWith('url:')) urlKeyCount++; else headlineKeyCount++;
+    const { urlKey, hKey } = buildKeys(page);
+    console.log(`[keys] page ${page.id} urlKey=${urlKey || '-'} hKey=${hKey || '-'}`);
 
-    if (!buckets.has(key)) buckets.set(key, []);
-    buckets.get(key).push({
+    const bucketId = chooseBucket(urlKey, hKey);
+    if (!bucketId) continue;
+
+    buckets.get(bucketId).push({
       id: page.id,
       created_time: page.created_time,
       headline: getHeadline(page),
       url: getPrimaryUrl(page),
+      urlKey, hKey,
     });
   }
 
-  console.log(`Built ${buckets.size} keys. URL-based: ${urlKeyCount}; headline-based: ${headlineKeyCount}`);
-
+  console.log(`\nBucket count: ${buckets.size}`);
   let duplicatesArchived = 0;
-  for (const [key, items] of buckets.entries()) {
+
+  for (const [bucketId, items] of buckets.entries()) {
     if (items.length <= 1) continue;
 
-    console.log(`\nGroup "${key}" — ${items.length} items`);
-    // Keep earliest; archive the rest
+    console.log(`\nGroup "${bucketId}" — ${items.length} items`);
     items.sort((a, b) => new Date(a.created_time) - new Date(b.created_time));
 
-    // Show group contents
+    // Show what we're grouping
     for (const it of items) {
-      console.log(`  ${it.created_time}  ${it.id}  ${it.headline ? `"${it.headline.slice(0, 80)}"` : ''}  ${it.url || ''}`);
+      console.log(`  ${it.created_time}  ${it.id}  ${it.urlKey || ''} ${it.hKey || ''}`);
+      console.log(`    "${(it.headline || '').slice(0, 120)}"`);
+      console.log(`    ${it.url || ''}`);
     }
 
+    // Keep earliest; archive the rest
     const toArchive = items.slice(1);
     for (const p of toArchive) {
       try {
@@ -238,7 +219,7 @@ async function findAndArchiveDuplicates() {
           await notion.pages.update({ page_id: p.id, archived: true });
           console.log(`  Archived ${p.id}`);
           duplicatesArchived++;
-          await delay(280);
+          await delay(250);
         }
       } catch (err) {
         console.error(`  Failed to archive ${p.id}: ${err.message}`);
