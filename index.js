@@ -1,3 +1,4 @@
+// fetch_rss.js (full file)
 require('dotenv').config();
 const { Client } = require('@notionhq/client');
 const Parser = require('rss-parser');
@@ -7,9 +8,9 @@ const notion = new Client({ auth: process.env.NOTION_API_KEY });
 const parser = new Parser();
 const databaseId = process.env.NOTION_DATABASE_ID;
 
-// --- Feeds (FIXED: Updated and verified RSS feed URLs) ---
+// --- Feeds ---
 const feeds = [
-  // --- Independent Russian Media (Google Version for Stability) ---
+  // Independent Russian Media (Google News search feeds)
   { name: 'Медуза', url: 'https://news.google.com/rss/search?q=site:meduza.io&hl=ru&gl=RU&ceid=RU:ru' },
   { name: 'Инсайдер', url: 'https://news.google.com/rss/search?q=site:theins.ru&hl=ru&gl=RU&ceid=RU:ru' },
   { name: 'Медиазона', url: 'https://news.google.com/rss/search?q=site:zona.media&hl=ru&gl=RU&ceid=RU:ru' },
@@ -23,20 +24,20 @@ const feeds = [
   { name: 'Дождь', url: 'https://news.google.com/rss/search?q=site:tvrain.tv&hl=ru&gl=RU&ceid=RU:ru' },
   { name: 'Тайга.инфо', url: 'https://news.google.com/rss/search?q=site:tayga.info&hl=ru&gl=RU&ceid=RU:ru' },
 
-  // --- Investigative & Human Rights (Google Version for Stability) ---
+  // Investigative & Human Rights
   { name: 'Проект', url: 'https://news.google.com/rss/search?q=site:proekt.media&hl=ru&gl=RU&ceid=RU:ru' },
   { name: 'Досье', url: 'https://news.google.com/rss/search?q=site:dossier.center&hl=ru&gl=RU&ceid=RU:ru' },
   { name: 'Bellingcat (RU)', url: 'https://news.google.com/rss/search?q=site:ru.bellingcat.com&hl=ru&gl=RU&ceid=RU:ru' },
   { name: 'ОВД-Инфо', url: 'https://news.google.com/rss/search?q=site:ovd.info&hl=ru&gl=RU&ceid=RU:ru' },
   { name: 'ОВД-Инфо (Доклады)', url: 'https://news.google.com/rss/search?q=site:reports.ovd.info&hl=ru&gl=RU&ceid=RU:ru' },
 
-  // --- Analytical & Niche (Direct Feeds are better here) ---
+  // Analytical & niche
   { name: 'Re:Russia', url: 'https://news.google.com/rss/search?q=site:re-russia.net&hl=ru&gl=RU&ceid=RU:ru' },
   { name: 'Carnegie (Russia/Eurasia)', url: 'https://news.google.com/rss/search?q=Russia+site:carnegieendowment.org&hl=ru&gl=RU&ceid=RU:ru' },
   { name: 'Faridaily (RU)', url: 'https://faridaily.ru/feed' },
   { name: 'Faridaily (EN)', url: 'https://faridaily.substack.com/feed' },
 
-  // --- International Broadcasters (Official Feeds are very reliable) ---
+  // International broadcasters
   { name: 'Русская служба Би-би-си', url: 'https://feeds.bbci.co.uk/russian/rss.xml' },
   { name: 'Настоящее Время', url: 'https://news.google.com/rss/search?q=site:currenttime.tv&hl=ru&gl=RU&ceid=RU:ru' },
   { name: 'Радио Свобода', url: 'https://news.google.com/rss/search?q=site:svoboda.org&hl=ru&gl=RU&ceid=RU:ru' },
@@ -44,21 +45,21 @@ const feeds = [
   { name: 'The Guardian', url: 'https://www.theguardian.com/world/russia/rss' },
   { name: 'Associated Press (Russia)', url: 'https://news.google.com/rss/search?q=Russia+site:apnews.com&hl=ru&gl=RU&ceid=RU:ru' },
 
-  // --- Telegram & Other (Direct Feeds Required) ---
+  // Telegram & other
   { name: 'Можем объяснить', url: 'https://rss.bridges.eqy.ch/?action=display&bridge=TelegramBridge&username=mozhemobyasnit&format=Mrss' },
   { name: 'База', url: 'https://news.google.com/rss/search?q=site:baza.io&hl=ru&gl=RU&ceid=RU:ru' },
   { name: 'Mash', url: 'https://news.google.com/rss/search?q=site:mash.ru&hl=ru&gl=RU&ceid=RU:ru' },
   { name: 'Astra', url: 'https://news.google.com/rss/search?q=site:astra.press&hl=ru&gl=RU&ceid=RU:ru' },
   { name: 'Readovka', url: 'https://news.google.com/rss/search?q=site:readovka.news&hl=ru&gl=RU&ceid=RU:ru' },
 
-  // --- Official Source (Direct Feed is reliable) ---
+  // Official
   { name: 'Кремль', url: 'http://www.kremlin.ru/events/all/feed' },
 ];
 
-// --- Add delay to avoid rate limits
+// --- delay helper
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// --- Helpers
+// --- text helpers
 function convertDatePlus8Hours(dateString) {
   if (!dateString) return new Date();
   const d = new Date(dateString);
@@ -79,18 +80,25 @@ function firstSentences(text, maxSentences = 3) {
   return snip || t.slice(0, 250);
 }
 
-// --- ORIGINAL, WORKING duplicate check using Headline and URL ---
+// --- improved body extraction / short-item heuristic
+function extractBody(item) {
+  const encoded = item['content:encoded'] || item.content;
+  const desc = item.description || item.summary || item.contentSnippet;
+  const combined = [encoded, desc].filter(Boolean).join(' ');
+  return stripHtml(combined).trim();
+}
+
+function isGoogleNewsLink(link) {
+  try { return new URL(link).hostname.endsWith('news.google.com'); } catch { return false; }
+}
+
+// --- duplicate check (headline OR URL within same Source)
 async function existsInNotion(source, title, link) {
   try {
     const orFilter = [];
-    if (title) {
-        orFilter.push({ property: 'Headline', title: { equals: title } });
-    }
-    if (link) {
-        orFilter.push({ property: 'URL', url: { equals: link } });
-    }
-    
-    if (orFilter.length === 0) return false;
+    if (title) orFilter.push({ property: 'Headline', title: { equals: title } });
+    if (link)  orFilter.push({ property: 'URL', url: { equals: link } });
+    if (!orFilter.length) return false;
 
     const resp = await notion.databases.query({
       database_id: databaseId,
@@ -104,7 +112,7 @@ async function existsInNotion(source, title, link) {
     return resp.results.length > 0;
   } catch (error) {
     console.error(`Error checking existence: ${error.message}`);
-    return true;
+    return true; // fail-safe to avoid dupes on query error
   }
 }
 
@@ -119,16 +127,13 @@ async function addToNotion(item, source) {
     const title = item.title || '(no title)';
     const link = item.link || '';
     const date = convertDatePlus8Hours(item.pubDate || item.isoDate || new Date());
-    const body =
-      stripHtml(item.contentSnippet || item.content || item.summary || item['content:encoded'] || '');
+    const body = extractBody(item);
     const shortText = firstSentences(body, 3);
     const chunks = chunkText(body, 2000);
 
     const blocksToAdd = chunks.slice(0, 25).map((chunk) => ({
       object: 'block',
-      paragraph: {
-        rich_text: [{ type: 'text', text: { content: chunk } }]
-      }
+      paragraph: { rich_text: [{ type: 'text', text: { content: chunk } }] }
     }));
 
     await notion.pages.create({
@@ -142,7 +147,7 @@ async function addToNotion(item, source) {
       },
       children: blocksToAdd
     });
-    
+
     return true;
   } catch (error) {
     console.error(`Failed to add to Notion: "${item.title || '(no title)'}". Error: ${error.message}`);
@@ -162,31 +167,27 @@ async function processFeed(feed) {
       return;
     }
 
+    // Limit per feed to keep API usage sane
     const itemsToProcess = parsed.items.slice(0, 20);
 
     for (const item of itemsToProcess) {
       const title = item.title || '';
-      const link = item.link || '';
-      
-      // --- НОВЫЙ ФИЛЬТР: Пропускаем "мусорные" статьи без текста ---
-      const body = stripHtml(item.contentSnippet || item.content || item.summary || '');
-      if (body.length < 150) {
-          console.warn(`Skipping short item (likely not an article): [${feed.name}] ${title}`);
-          continue; // Пропустить и перейти к следующей
+      const link  = item.link  || '';
+      const body  = extractBody(item);
+
+      // Heuristic: accept if body has some text, OR title is informative, OR it's a Google News entry
+      if (!(body.length >= 80 || title.length >= 50 || isGoogleNewsLink(link))) {
+        console.warn(`Skipping short item (likely not an article): [${feed.name}] ${title}`);
+        continue;
       }
-      // --- КОНЕЦ ФИЛЬТРА ---
 
       const seen = await existsInNotion(feed.name, title, link);
       if (seen) continue;
 
-      try {
-        const added = await addToNotion(item, feed.name);
-        if (added) {
-          console.log(`Added: [${feed.name}] ${title}`);
-          await delay(200);
-        }
-      } catch (createErr) {
-        console.error(`Create failed for ${feed.name}: ${createErr.message}`);
+      const added = await addToNotion(item, feed.name);
+      if (added) {
+        console.log(`Added: [${feed.name}] ${title}`);
+        await delay(200);
       }
     }
   } catch (err) {
@@ -196,12 +197,10 @@ async function processFeed(feed) {
 
 (async function run() {
   console.log(`Processing ${feeds.length} feeds...`);
-  
   for (const feed of feeds) {
     await processFeed(feed);
     await delay(500);
   }
-  
   console.log('Done.');
 })().catch(err => {
   console.error('Fatal error:', err);
