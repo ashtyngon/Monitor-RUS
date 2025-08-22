@@ -1,25 +1,17 @@
-name: Scheduled RSS → Notion (Free)
+name: Run Index (Every 30 Minutes)
 
 on:
   schedule:
-    - cron: "*/30 * * * *"   # Runs every 30 minutes
-  workflow_dispatch: {}
-
-permissions:
-  contents: read
-  issues: write
-
-concurrency:
-  group: monitor-${{ github.ref }}
-  cancel-in-progress: false
+    - cron: "*/30 * * * *"   # every 30 minutes
+  workflow_dispatch: {}       # also allow manual trigger
 
 jobs:
-  run-rss-script:
+  run-index-script:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
     steps:
-      - name: Check out code
+      - name: Check out repository
         uses: actions/checkout@v4
 
       - name: Use Node LTS
@@ -27,13 +19,11 @@ jobs:
         with:
           node-version: 'lts/*'
 
-      - name: Install dependencies (No CI)
-        run: npm install
+      - name: Install dependencies
+        run: npm install --no-audit --fund=false
 
-      - name: Run the monitor
+      - name: Run index.js
         env:
           NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
-          NODE_OPTIONS: "--max-old-space-size=2048"
         run: node index.js
-        continue-on-error: true
