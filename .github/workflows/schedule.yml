@@ -5,6 +5,11 @@ on:
     - cron: "*/30 * * * *"   # every 30 minutes
   workflow_dispatch: {}       # also allow manual trigger
 
+# 👇 ADD THIS BLOCK TO PREVENT OVERLAPS
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
 jobs:
   run-index-script:
     runs-on: ubuntu-latest
