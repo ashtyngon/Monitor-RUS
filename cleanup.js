@@ -1,4 +1,4 @@
-// cleanup.js — One-time script to find and remove duplicates in a Notion database
+// cleanup.js — Finds and archives duplicate pages in Notion
 require('dotenv').config();
 const { Client } = require('@notionhq/client');
 
@@ -6,78 +6,68 @@ const notion = new Client({ auth: process.env.NOTION_API_KEY });
 const databaseId = process.env.NOTION_DATABASE_ID;
 const delay = (ms) => new Promise(r => setTimeout(r, ms));
 
-async function cleanupDuplicates() {
-  console.log('Fetching all pages from the database. This might take a while...');
-  const pagesByUrl = new Map();
-  let cursor = undefined;
+function normalizeTitle(raw = '') {
+  return raw.trim().replace(/[«»“”"]/g, '').replace(/\s+/g, ' ').toLowerCase();
+}
 
-  // 1. Fetch all pages and group them by URL
+async function fetchAllPages() {
+  const allPages = [];
+  let cursor = undefined;
+  console.log('Fetching all pages from database...');
   while (true) {
     const { results, next_cursor } = await notion.databases.query({
       database_id: databaseId,
       page_size: 100,
       start_cursor: cursor,
     });
-
-    for (const page of results) {
-      const urlProp = page.properties['URL'];
-      if (urlProp && urlProp.url) {
-        const url = urlProp.url;
-        if (!pagesByUrl.has(url)) {
-          pagesByUrl.set(url, []);
-        }
-        pagesByUrl.get(url).push(page.id);
-      }
-    }
-
+    allPages.push(...results);
     if (!next_cursor) break;
     cursor = next_cursor;
   }
-
-  console.log(`Found ${pagesByUrl.size} unique URLs across all pages.`);
-
-  // 2. Identify duplicates and archive them
-  let duplicatesFound = 0;
-  let pagesToDelete = [];
-  
-  for (const [url, pageIds] of pagesByUrl.entries()) {
-    if (pageIds.length > 1) {
-      const duplicatesCount = pageIds.length - 1;
-      duplicatesFound += duplicatesCount;
-      console.log(`Found ${duplicatesCount} duplicate(s) for URL: ${url}`);
-      
-      // Keep the first one, mark the rest for deletion
-      const idsToDelete = pageIds.slice(1);
-      pagesToDelete.push(...idsToDelete);
-    }
-  }
-
-  if (pagesToDelete.length === 0) {
-    console.log('No duplicates found. Your database is clean! ✨');
-    return;
-  }
-
-  console.log(`\nReady to delete a total of ${duplicatesFound} duplicate pages.`);
-
-  // 3. Archive the duplicate pages
-  for (let i = 0; i < pagesToDelete.length; i++) {
-    const pageId = pagesToDelete[i];
-    try {
-      await notion.pages.update({
-        page_id: pageId,
-        archived: true,
-      });
-      console.log(`[${i + 1}/${pagesToDelete.length}] Archived duplicate page: ${pageId}`);
-      await delay(150); // Be kind to the Notion API
-    } catch (error) {
-      console.error(`Failed to archive page ${pageId}:`, error.message);
-    }
-  }
-
-  console.log('\nCleanup complete!');
+  console.log(`Found a total of ${allPages.length} pages.`);
+  return allPages;
 }
 
-cleanupDuplicates().catch(err => {
-  console.error('An error occurred during cleanup:', err);
+async function archivePage(pageId) {
+  await notion.pages.update({ page_id: pageId, archived: true });
+}
+
+(async function runCleanup() {
+  const pages = await fetchAllPages();
+  const groups = new Map();
+
+  // Group pages by normalized title
+  for (const page of pages) {
+    const titleProp = page.properties?.Headline?.title;
+    const title = titleProp?.[0]?.plain_text || '';
+    const normalized = normalizeTitle(title);
+    
+    if (normalized) {
+      if (!groups.has(normalized)) groups.set(normalized, []);
+      groups.get(normalized).push({ id: page.id, title: title });
+    }
+  }
+
+  let archivedCount = 0;
+  for (const [title, items] of groups.entries()) {
+    if (items.length > 1) {
+      console.log(`Found ${items.length} items for title: "${items[0].title}"`);
+      const toArchive = items.slice(1); // Keep the first one, archive the rest
+      for (const item of toArchive) {
+        try {
+          await archivePage(item.id);
+          console.log(`  > Archived duplicate page ID: ${item.id}`);
+          archivedCount++;
+          await delay(200);
+        } catch (e) {
+          console.error(`  > FAILED to archive ${item.id}: ${e.message}`);
+        }
+      }
+    }
+  }
+
+  console.log(`\nCleanup complete. Archived ${archivedCount} duplicate pages.`);
+})().catch(err => {
+  console.error('A fatal error occurred during cleanup:', err);
   process.exit(1);
 });
