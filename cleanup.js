@@ -1,11 +1,11 @@
-// cleanup.js — FINAL version with increased timeout
+// cleanup.js — FINAL version with a 20-minute timeout
 require('dotenv').config();
 const { Client } = require('@notionhq/client');
 
-// THIS IS THE FIX: We are telling the client to wait 5 minutes instead of the default 1 minute.
+// This is the critical fix: We tell the client to wait 20 minutes before timing out.
 const notion = new Client({
   auth: process.env.NOTION_API_KEY,
-  timeout_ms: 300000, // 5 minutes in milliseconds
+  timeout_ms: 1200000, // 20 minutes in milliseconds
 });
 
 const databaseId = process.env.NOTION_DATABASE_ID;
@@ -72,7 +72,7 @@ async function cleanupDuplicates() {
         archived: true,
       });
       console.log(`[${i + 1}/${pagesToDelete.length}] Archived duplicate page: ${pageId}`);
-      await delay(200);
+      await delay(200); // Be kind to the Notion API
     } catch (error) {
       console.error(`Failed to archive page ${pageId}:`, error.message);
     }
