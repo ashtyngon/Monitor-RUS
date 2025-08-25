@@ -1,33 +1,32 @@
-name: Run Index (Every 30 Minutes)
+name: Fetch Feeds (Scheduled)
 
 on:
   schedule:
-    - cron: "*/30 * * * *"   # every 30 minutes
-  workflow_dispatch: {}       # also allow manual trigger
+    - cron: "*/30 * * * *"
+  workflow_dispatch: {}
 
-# 👇 ADD THIS BLOCK TO PREVENT OVERLAPS
 concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: true
 
 jobs:
-  run-index-script:
+  fetch-feeds:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Use Node LTS
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 'lts/*'
+          cache: 'npm'
 
       - name: Install dependencies
-        run: npm install --no-audit --fund=false
+        run: npm install
 
-      - name: Run index.js
+      - name: Run fetcher script
         env:
           NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
