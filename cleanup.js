@@ -1,8 +1,13 @@
-// cleanup.js — One-time script to find and remove duplicates in a Notion database
+// cleanup.js — One-time script with increased timeout
 require('dotenv').config();
 const { Client } = require('@notionhq/client');
 
-const notion = new Client({ auth: process.env.NOTION_API_KEY });
+// 👇 ADDED a 5-minute timeout to the client configuration
+const notion = new Client({
+  auth: process.env.NOTION_API_KEY,
+  timeout_ms: 300000, // 5 minutes
+});
+
 const databaseId = process.env.NOTION_DATABASE_ID;
 const delay = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -46,7 +51,6 @@ async function cleanupDuplicates() {
       duplicatesFound += duplicatesCount;
       console.log(`Found ${duplicatesCount} duplicate(s) for URL: ${url}`);
       
-      // Keep the first one, mark the rest for deletion
       const idsToDelete = pageIds.slice(1);
       pagesToDelete.push(...idsToDelete);
     }
@@ -68,7 +72,7 @@ async function cleanupDuplicates() {
         archived: true,
       });
       console.log(`[${i + 1}/${pagesToDelete.length}] Archived duplicate page: ${pageId}`);
-      await delay(150); // Be kind to the Notion API
+      await delay(200); // Be kind to the Notion API
     } catch (error) {
       console.error(`Failed to archive page ${pageId}:`, error.message);
     }
